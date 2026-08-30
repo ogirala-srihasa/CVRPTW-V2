@@ -1,13 +1,33 @@
 #!/bin/bash
 mkdir -p outputs
 
-if [[ "$1" == "-p" || "$1" == "--parallel" ]]; then
+sa_iterations=10000
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -p|--parallel)
+            PARALLEL=1
+            shift
+            ;;
+        --iterations)
+            sa_iterations="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+if [[ "$PARALLEL" == "1" ]]; then
     echo "Mode: Parallel"
     make par
 else
     echo "Mode: Sequential"
     make
 fi
+
+echo "SA iterations: $sa_iterations"
 
 result_file="outputs/result.csv"
 
@@ -29,7 +49,7 @@ for infile in testcase/*; do
         temp_outfile="outputs/${filename}_${angle}.tmp"
         temp_errfile="outputs/${filename}_${angle}.err"
 
-        ./solve_cvrptw "$infile" "$angle" > "$temp_outfile" 2> "$temp_errfile"
+        ./solve_cvrptw "$infile" "$angle" "$sa_iterations" > "$temp_outfile" 2> "$temp_errfile"
 
         final_cost=$(grep -oP "Final_Cost:\s+\K[0-9.]+" "$temp_errfile")
         total_time=$(grep -oP "Total_Time:\s+\K[0-9.]+" "$temp_errfile")

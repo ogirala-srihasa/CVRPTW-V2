@@ -14,7 +14,9 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
    - Best inter-route 2-opt* move (parallel).
    - Intra-route 2-opt on every route (parallel over routes).
    
-   The combined delta is accepted or rejected via the SA criterion (Boltzmann acceptance, geometric cooling with alpha = 0.9995, T0 = 2% of initial cost).
+   The combined delta is accepted or rejected via the SA criterion (Boltzmann acceptance, geometric cooling with alpha = 0.9995, T0 = 2% of initial cost). The loop runs up to `sa_iterations` (default 10,000) but stops early if:
+   - **Stagnation**: best cost improves by less than 0.1% over a 300-iteration window.
+   - **Temperature floor**: temperature drops below `1e-5 * current_cost` (SA has degenerated into greedy search).
 5. **Verify and report**: check capacity and time-window feasibility for all routes, print route details and timing/cost summary.
 
 Distances are computed on-the-fly (Euclidean, `VRP::get_dist()`), not precomputed into a matrix.
@@ -46,13 +48,17 @@ make clean
 ## Run a Single Instance
 
 ```bash
-./solve_cvrptw <instance_file> <angle_range>
+./solve_cvrptw <instance_file> <angle_range> [sa_iterations]
 ```
 
-`angle_range` controls the angular width (in degrees) of each sweep cluster. Example:
+- `angle_range` — angular width (in degrees) of each sweep cluster.
+- `sa_iterations` — maximum SA iterations (default: 10,000). Early stopping may terminate sooner.
+
+Examples:
 
 ```bash
 ./solve_cvrptw testcase/C1_10_1.txt 180
+./solve_cvrptw testcase/C1_10_1.txt 180 5000
 ```
 
 ## Batch Experiments
@@ -67,6 +73,9 @@ bash test.sh
 
 # Parallel
 bash test.sh --parallel
+
+# Custom SA iterations
+bash test.sh --parallel --iterations 5000
 ```
 
 Results go to `outputs/` (per-instance best output files) and `outputs/result.csv` (one summary line per instance).
@@ -77,6 +86,7 @@ Builds sequential and runs all instances at a fixed angle of 30:
 
 ```bash
 bash run.sh
+bash run.sh --iterations 5000
 ```
 
 ### `test_huge.sh` — 10,000-customer XMLTW instances
@@ -89,9 +99,14 @@ bash test_huge.sh
 
 # Parallel
 bash test_huge.sh --parallel
+
+# Custom SA iterations
+bash test_huge.sh --parallel --iterations 20000
 ```
 
 Results go to `outputs/result_huge.csv`.
+
+All scripts default to 10,000 SA iterations if `--iterations` is not specified.
 
 ### SLURM (HPC cluster)
 

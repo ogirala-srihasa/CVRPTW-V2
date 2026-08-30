@@ -534,6 +534,7 @@ vector<vector<RouteNode>> sa_post_optimization(
   // Best solution tracking
   auto best_routes = routes;
   double best_cost = current_cost;
+  double best_cost_at_window_start = best_cost;
 
   // RNG for SA acceptance and ruin-and-recreate
   random_device rd;
@@ -541,8 +542,15 @@ vector<vector<RouteNode>> sa_post_optimization(
 
   const int NUM_REMOVE = 14;
 
+  // Early stopping parameters
+  const int    STAGNATION_WINDOW  = 300;
+  const double STAGNATION_EPSILON = 0.001;
+  const double TEMP_FLOOR_FACTOR  = 1e-5;
+
   cout << "  Initial cost: " << current_cost
        << "  T0: " << T0 << endl;
+
+  bool early_stopped = false;
 
   for (int iter = 0; iter < max_iterations; iter++) {
 
@@ -600,6 +608,28 @@ vector<vector<RouteNode>> sa_post_optimization(
     // ---- Cool down ----
     temperature *= alpha;
 
+    // ---- Early stopping: temperature floor ----
+    if (temperature < TEMP_FLOOR_FACTOR * current_cost) {
+      cout << "  Early stop (temperature floor) at iteration " << (iter + 1)
+           << ": T=" << temperature << endl;
+      early_stopped = true;
+      break;
+    }
+
+    // ---- Early stopping: stagnation over window ----
+    if ((iter + 1) % STAGNATION_WINDOW == 0) {
+      double relative_improvement =
+          (best_cost_at_window_start - best_cost) / best_cost_at_window_start;
+      if (relative_improvement < STAGNATION_EPSILON) {
+        cout << "  Early stop (stagnation) at iteration " << (iter + 1)
+             << ": relative improvement " << relative_improvement
+             << " over last " << STAGNATION_WINDOW << " iterations" << endl;
+        early_stopped = true;
+        break;
+      }
+      best_cost_at_window_start = best_cost;
+    }
+
     // ---- Progress log every iteration ----
     // cout << "SA_ITER " << (iter + 1)
     //      << " current=" << current_cost
@@ -608,7 +638,8 @@ vector<vector<RouteNode>> sa_post_optimization(
     //      << " vehicles=" << routes.size() << endl;
   }
 
-  cout << "=== SA complete. Best cost: " << best_cost
+  cout << "=== SA " << (early_stopped ? "early-stopped" : "complete")
+       << ". Best cost: " << best_cost
        << "  Vehicles: " << best_routes.size() << " ===" << endl;
 
   return best_routes;

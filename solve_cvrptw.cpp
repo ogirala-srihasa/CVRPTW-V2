@@ -17,7 +17,8 @@ int main(int argc, char *argv[]) {
   VRP vrp;
   if (argc < 3) {
     cout << "seqCVRPTW version 3" << '\n';
-    cout << "Usage: " << argv[0] << " toy.vrp angle_range" << '\n';
+    cout << "Usage: " << argv[0]
+         << " toy.vrp angle_range [sa_iterations]" << '\n';
     exit(1);
   }
 
@@ -35,6 +36,7 @@ int main(int argc, char *argv[]) {
   (void)n_clusters;
 
   double angle_range = stod(argv[2]);
+  int sa_iterations = (argc >= 4) ? stoi(argv[3]) : 10000;
 
   // vector<vector<node_t>> clusters =
   //     clustering_angle_sweep_parallel(vrp, angle_range, 1000);
@@ -79,7 +81,7 @@ int main(int argc, char *argv[]) {
 
   chrono::steady_clock::time_point post_start = chrono::steady_clock::now();
 
-  auto best_routes = sa_post_optimization(vrp, routes, 1000);
+  auto best_routes = sa_post_optimization(vrp, routes, sa_iterations);
 
   chrono::steady_clock::time_point post_end = chrono::steady_clock::now();
   chrono::steady_clock::time_point total_end = chrono::steady_clock::now();
