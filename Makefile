@@ -20,7 +20,8 @@ SRCS := \
 	lib/clark/clarke_wright.cpp \
 	lib/optim/intra_route_optimization.cpp \
 	lib/optim/inter_route_optimization.cpp \
-	lib/optim/sa_optimization.cpp
+	lib/optim/sa_optimization.cpp \
+	lib/optim/route_minimization.cpp
 
 OBJS := $(SRCS:.cpp=.o)
 DEPS := $(OBJS:.o=.d)

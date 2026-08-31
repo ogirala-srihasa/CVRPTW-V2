@@ -7,7 +7,8 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
 1. **Read instance** from a Solomon-format file (`lib/vrp.cpp`).
 2. **Cluster customers** using angle-sweep clustering (`lib/cluster/clustering.cpp`). The sweep partitions customers by polar angle from the depot, grouping them into capacity-feasible clusters. A parallel variant (`clustering_angle_sweep_parallel`) evaluates many random starting angles via OpenMP.
 3. **Construct initial routes** within each cluster using the Clarke-Wright savings heuristic (`lib/clark/clarke_wright.cpp`), respecting both capacity and time-window constraints. Sequential and parallel variants available.
-4. **Post-optimize with simulated annealing** (`lib/optim/sa_optimization.cpp`). Each SA iteration applies, in order:
+4. **Minimize vehicle count** (`lib/optim/route_minimization.cpp`). Greedy route ejection: repeatedly picks the smallest route (fewest customers, tie-break by lowest demand), removes it, and attempts to reinsert its customers at the cheapest feasible position across all remaining routes (parallel search). Unplaced customers accumulate and are retried after subsequent ejections free up capacity. Runs up to 1000 attempts; accepts any feasible insertion regardless of distance increase, since SA recovers distance afterward. Customers with tighter time windows are placed first to maximize reinsertion success.
+5. **Post-optimize with simulated annealing** (`lib/optim/sa_optimization.cpp`). Each SA iteration applies, in order:
    - Ruin-and-recreate: randomly remove customers and greedily reinsert at cheapest feasible positions (parallel search over routes).
    - Best inter-route relocate move (parallel).
    - Best inter-route swap move (parallel).
@@ -17,7 +18,7 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
    The combined delta is accepted or rejected via the SA criterion (Boltzmann acceptance, geometric cooling with alpha = 0.9995, T0 = 2% of initial cost). The loop runs up to `sa_iterations` (default 10,000) but stops early if:
    - **Stagnation**: best cost improves by less than 0.1% over a 300-iteration window.
    - **Temperature floor**: temperature drops below `1e-5 * current_cost` (SA has degenerated into greedy search).
-5. **Verify and report**: check capacity and time-window feasibility for all routes, print route details and timing/cost summary.
+6. **Verify and report**: check capacity and time-window feasibility for all routes, print route details and timing/cost summary.
 
 Distances are computed on-the-fly (Euclidean, `VRP::get_dist()`), not precomputed into a matrix.
 
@@ -133,6 +134,8 @@ Routes are printed to `stdout`. A summary line is written to `stderr` with these
 | `File` | Input instance path |
 | `Preprocessing_Time` | Clustering time (seconds) |
 | `Route_Construction_Time` | Clarke-Wright time (seconds) |
+| `Route_Minimization_Time` | Route minimization phase time (seconds) |
+| `Routes_Eliminated` | Net routes eliminated by route minimization |
 | `Post_Optimization_Time` | SA optimization time (seconds) |
 | `Initial_Cost` | Total distance after construction, before SA |
 | `Final_Cost` | Total distance after SA optimization |
@@ -161,6 +164,7 @@ lib/
   clark/
     clarke_wright.h / clarke_wright.cpp   Clarke-Wright savings heuristic (seq + parallel)
   optim/
+    route_minimization.h / .cpp                    Vehicle count reduction via route ejection
     sa_optimization.h / sa_optimization.cpp       SA post-optimization loop
     intra_route_optimization.h / .cpp             Within-route: nearest-neighbor, 2-opt
     inter_route_optimization.h / .cpp             Between-route: relocate, swap, 2-opt*

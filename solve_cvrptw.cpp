@@ -7,6 +7,7 @@
 #include "lib/cluster/clustering.h"
 #include "lib/optim/inter_route_optimization.h"
 #include "lib/optim/intra_route_optimization.h"
+#include "lib/optim/route_minimization.h"
 #include "lib/optim/sa_optimization.h"
 #include "lib/route_utils.h"
 #include "lib/vrp.h"
@@ -75,6 +76,11 @@ int main(int argc, char *argv[]) {
     recalculate_pred_distances(vrp, route);
   }
 
+  int initial_vehicles = static_cast<int>(routes.size());
+  chrono::steady_clock::time_point rm_start = chrono::steady_clock::now();
+  int routes_eliminated = minimize_routes(vrp, routes, 1000);
+  chrono::steady_clock::time_point rm_end = chrono::steady_clock::now();
+
   weight_t min_cost = calculate_total_cost(vrp, routes);
   weight_t min_cost1 = min_cost;
   cout << "Total Distance: " << min_cost << endl;
@@ -104,6 +110,13 @@ int main(int argc, char *argv[]) {
                     .count() *
                 1.E-9)
          << " s ";
+    cerr << "Route_Minimization_Time: "
+         << static_cast<double>(
+                chrono::duration_cast<chrono::nanoseconds>(rm_end - rm_start)
+                    .count() *
+                1.E-9)
+         << " s ";
+    cerr << "Routes_Eliminated: " << routes_eliminated << " ";
     cerr << "Post_Optimization_Time: "
          << static_cast<double>(chrono::duration_cast<chrono::nanoseconds>(
                                     post_end - post_start)
