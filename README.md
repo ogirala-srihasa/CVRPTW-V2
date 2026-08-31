@@ -138,6 +138,7 @@ Routes are printed to `stdout`. A summary line is written to `stderr` with these
 | `Final_Cost` | Total distance after SA optimization |
 | `Total_Time` | End-to-end wall time (seconds) |
 | `Vehicle_Used` | Number of routes in the final solution |
+| `SA_Iterations` | Actual SA iterations run (may be less than max due to early stopping) |
 | `route_length` | Length of the longest route (node count) |
 | `VALID` | Printed only if all routes pass feasibility checks |
 

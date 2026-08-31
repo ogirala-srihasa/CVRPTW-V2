@@ -81,7 +81,8 @@ int main(int argc, char *argv[]) {
 
   chrono::steady_clock::time_point post_start = chrono::steady_clock::now();
 
-  auto best_routes = sa_post_optimization(vrp, routes, sa_iterations);
+  int sa_iterations_ran = 0;
+  auto best_routes = sa_post_optimization(vrp, routes, sa_iterations, &sa_iterations_ran);
 
   chrono::steady_clock::time_point post_end = chrono::steady_clock::now();
   chrono::steady_clock::time_point total_end = chrono::steady_clock::now();
@@ -118,6 +119,7 @@ int main(int argc, char *argv[]) {
                                 1.E-9)
          << " s ";
     cerr << "Vehicle_Used: " << best_routes.size() << " ";
+    cerr << "SA_Iterations: " << sa_iterations_ran << " ";
     cerr << "route_length: " << max_length_of_route(best_routes) << " ";
     cerr << "VALID" << endl;
   }

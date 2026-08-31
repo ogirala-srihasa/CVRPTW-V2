@@ -520,7 +520,8 @@ static bool sa_accept(double delta, double temperature, mt19937 &rng) {
 vector<vector<RouteNode>> sa_post_optimization(
     const VRP &vrp,
     vector<vector<RouteNode>> routes,
-    int max_iterations) {
+    int max_iterations,
+    int *iterations_ran) {
 
   cout << "\n=== Starting SA Post-Optimization (" << max_iterations
        << " iterations) ===" << endl;
@@ -551,6 +552,7 @@ vector<vector<RouteNode>> sa_post_optimization(
        << "  T0: " << T0 << endl;
 
   bool early_stopped = false;
+  int actual_iterations = max_iterations;
 
   for (int iter = 0; iter < max_iterations; iter++) {
 
@@ -612,6 +614,7 @@ vector<vector<RouteNode>> sa_post_optimization(
     if (temperature < TEMP_FLOOR_FACTOR * current_cost) {
       cout << "  Early stop (temperature floor) at iteration " << (iter + 1)
            << ": T=" << temperature << endl;
+      actual_iterations = iter + 1;
       early_stopped = true;
       break;
     }
@@ -624,6 +627,7 @@ vector<vector<RouteNode>> sa_post_optimization(
         cout << "  Early stop (stagnation) at iteration " << (iter + 1)
              << ": relative improvement " << relative_improvement
              << " over last " << STAGNATION_WINDOW << " iterations" << endl;
+        actual_iterations = iter + 1;
         early_stopped = true;
         break;
       }
@@ -641,6 +645,8 @@ vector<vector<RouteNode>> sa_post_optimization(
   cout << "=== SA " << (early_stopped ? "early-stopped" : "complete")
        << ". Best cost: " << best_cost
        << "  Vehicles: " << best_routes.size() << " ===" << endl;
+
+  if (iterations_ran) *iterations_ran = actual_iterations;
 
   return best_routes;
 }
