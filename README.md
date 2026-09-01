@@ -6,9 +6,11 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
 
 1. **Read instance** from a Solomon-format file (`lib/vrp.cpp`).
 2. **Cluster customers** using angle-sweep clustering (`lib/cluster/clustering.cpp`). The sweep partitions customers by polar angle from the depot, grouping them into capacity-feasible clusters. A parallel variant (`clustering_angle_sweep_parallel`) evaluates many random starting angles via OpenMP.
-3. **Construct initial routes** within each cluster using the Clarke-Wright savings heuristic (`lib/clark/clarke_wright.cpp`), respecting both capacity and time-window constraints. Sequential and parallel variants available.
-4. **Minimize vehicle count** (`lib/optim/route_minimization.cpp`). Greedy route ejection: repeatedly picks the smallest route (fewest customers, tie-break by lowest demand), removes it, and attempts to reinsert its customers at the cheapest feasible position across all remaining routes (parallel search). Unplaced customers accumulate and are retried after subsequent ejections free up capacity. Runs up to 1000 attempts; accepts any feasible insertion regardless of distance increase, since SA recovers distance afterward. Customers with tighter time windows are placed first to maximize reinsertion success.
-5. **Post-optimize with simulated annealing** (`lib/optim/sa_optimization.cpp`). Each SA iteration applies, in order:
+3. **Construct initial routes** within each cluster using the Clarke-Wright savings heuristic (`lib/clark/clarke_wright.cpp`), respecting both capacity and time-window constraints. Sequential and parallel variants available. Routes are bookended with DEPOT nodes after construction.
+4. **Inter-route optimization** (`lib/optim/inter_route_optimization.cpp`). Applies three between-route improvement operators in sequence: relocate (move a customer from one route to another), swap (exchange customers between routes), and 2-opt* (reconnect route tails). Sequential and OpenMP-parallel variants.
+5. **Intra-route optimization** (`lib/optim/intra_route_optimization.cpp`). Applies within-route improvement: nearest-neighbor TSP approximation followed by 2-opt. DEPOT bookends are stripped before this phase (since `postProcessIt` reorders all route elements) and re-added afterward. Sequential and OpenMP-parallel variants.
+6. **Minimize vehicle count** (`lib/optim/route_minimization.cpp`). Random 2-route ejection: each iteration randomly selects 2 routes, ejects all their customers, and attempts to reinsert each at the cheapest feasible position across remaining routes (parallel search). Customers with tighter time windows are inserted first. Any customers that cannot be feasibly reinserted are consolidated into new routes via greedy cheapest-insertion (`build_greedy_routes`), seeded by time-window tightness. The best solution (fewest routes) seen across all iterations is kept. Runs up to 1000 iterations by default.
+7. **Post-optimize with simulated annealing** (`lib/optim/sa_optimization.cpp`). Each SA iteration applies, in order:
    - Ruin-and-recreate: randomly remove customers and greedily reinsert at cheapest feasible positions (parallel search over routes).
    - Best inter-route relocate move (parallel).
    - Best inter-route swap move (parallel).
@@ -18,7 +20,7 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
    The combined delta is accepted or rejected via the SA criterion (Boltzmann acceptance, geometric cooling with alpha = 0.9995, T0 = 2% of initial cost). The loop runs up to `sa_iterations` (default 10,000) but stops early if:
    - **Stagnation**: best cost improves by less than 0.1% over a 300-iteration window.
    - **Temperature floor**: temperature drops below `1e-5 * current_cost` (SA has degenerated into greedy search).
-6. **Verify and report**: check capacity and time-window feasibility for all routes, print route details and timing/cost summary.
+8. **Verify and report**: check capacity and time-window feasibility for all routes, print route details and per-phase timing/cost/vehicle summary.
 
 Distances are computed on-the-fly (Euclidean, `VRP::get_dist()`), not precomputed into a matrix.
 
@@ -127,21 +129,30 @@ Both use 1 node, 48 cores, partition `small`, `OMP_NUM_THREADS=48`.
 
 ## Output
 
-Routes are printed to `stdout`. A summary line is written to `stderr` with these fields:
+Routes are printed to `stdout`. A summary line is written to `stderr` with per-phase metrics:
 
 | Field | Description |
 |-------|-------------|
 | `File` | Input instance path |
 | `Preprocessing_Time` | Clustering time (seconds) |
-| `Route_Construction_Time` | Clarke-Wright time (seconds) |
-| `Route_Minimization_Time` | Route minimization phase time (seconds) |
+| `Construction_Time` | Clarke-Wright time (seconds) |
+| `Construction_Cost` | Total distance after construction |
+| `Construction_Vehicles` | Vehicle count after construction |
+| `InterRoute_Time` | Inter-route optimization time (seconds) |
+| `InterRoute_Cost` | Total distance after inter-route optimization |
+| `InterRoute_Vehicles` | Vehicle count after inter-route optimization |
+| `IntraRoute_Time` | Intra-route optimization time (seconds) |
+| `IntraRoute_Cost` | Total distance after intra-route optimization |
+| `IntraRoute_Vehicles` | Vehicle count after intra-route optimization |
+| `RouteMin_Time` | Route minimization phase time (seconds) |
+| `RouteMin_Cost` | Total distance after route minimization |
+| `RouteMin_Vehicles` | Vehicle count after route minimization |
 | `Routes_Eliminated` | Net routes eliminated by route minimization |
-| `Post_Optimization_Time` | SA optimization time (seconds) |
-| `Initial_Cost` | Total distance after construction, before SA |
-| `Final_Cost` | Total distance after SA optimization |
-| `Total_Time` | End-to-end wall time (seconds) |
-| `Vehicle_Used` | Number of routes in the final solution |
+| `SA_Time` | SA optimization time (seconds) |
 | `SA_Iterations` | Actual SA iterations run (may be less than max due to early stopping) |
+| `Final_Cost` | Total distance after SA optimization |
+| `Final_Vehicles` | Number of routes in the final solution |
+| `Total_Time` | End-to-end wall time (seconds) |
 | `route_length` | Length of the longest route (node count) |
 | `VALID` | Printed only if all routes pass feasibility checks |
 

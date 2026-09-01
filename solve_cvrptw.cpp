@@ -76,15 +76,65 @@ int main(int argc, char *argv[]) {
     recalculate_pred_distances(vrp, route);
   }
 
-  int initial_vehicles = static_cast<int>(routes.size());
+  weight_t construction_cost = calculate_total_cost(vrp, routes);
+  int construction_vehicles = static_cast<int>(routes.size());
+  cout << "Construction Cost: " << construction_cost
+       << " Vehicles: " << construction_vehicles << endl;
+
+  // --- Phase: Inter-route optimization ---
+  chrono::steady_clock::time_point inter_start = chrono::steady_clock::now();
+#ifdef USE_PARALLEL
+  inter_route_relocate_parallel(vrp, routes);
+  inter_route_swap_parallel(vrp, routes);
+  inter_route_2opt_star_parallel(vrp, routes);
+#else
+  inter_route_relocate(vrp, routes);
+  inter_route_swap(vrp, routes);
+  inter_route_2opt_star(vrp, routes);
+#endif
+  chrono::steady_clock::time_point inter_end = chrono::steady_clock::now();
+
+  weight_t inter_cost = calculate_total_cost(vrp, routes);
+  int inter_vehicles = static_cast<int>(routes.size());
+  cout << "Inter-Route Opt Cost: " << inter_cost
+       << " Vehicles: " << inter_vehicles << endl;
+
+  // --- Phase: Intra-route optimization ---
+  // postProcessIt expects routes WITHOUT DEPOT bookends, so strip then re-add
+  chrono::steady_clock::time_point intra_start = chrono::steady_clock::now();
+  for (auto &route : routes) {
+    if (!route.empty() && route.front().id == DEPOT) route.erase(route.begin());
+    if (!route.empty() && route.back().id == DEPOT) route.pop_back();
+  }
+  weight_t intra_cost;
+#ifdef USE_PARALLEL
+  routes = postProcessIt_parallel(vrp, routes, intra_cost);
+#else
+  routes = postProcessIt(vrp, routes, intra_cost);
+#endif
+  for (auto &route : routes) {
+    route.insert(route.begin(), RouteNode(DEPOT));
+    route.push_back(RouteNode(DEPOT));
+    recalculate_pred_distances(vrp, route);
+  }
+  chrono::steady_clock::time_point intra_end = chrono::steady_clock::now();
+
+  intra_cost = calculate_total_cost(vrp, routes);
+  int intra_vehicles = static_cast<int>(routes.size());
+  cout << "Intra-Route Opt Cost: " << intra_cost
+       << " Vehicles: " << intra_vehicles << endl;
+
+  // --- Phase: Route Minimization ---
   chrono::steady_clock::time_point rm_start = chrono::steady_clock::now();
   int routes_eliminated = minimize_routes(vrp, routes, 1000);
   chrono::steady_clock::time_point rm_end = chrono::steady_clock::now();
 
-  weight_t min_cost = calculate_total_cost(vrp, routes);
-  weight_t min_cost1 = min_cost;
-  cout << "Total Distance: " << min_cost << endl;
+  weight_t rm_cost = calculate_total_cost(vrp, routes);
+  int rm_vehicles = static_cast<int>(routes.size());
+  cout << "Route Minimization Cost: " << rm_cost
+       << " Vehicles: " << rm_vehicles << endl;
 
+  // --- Phase: SA Post-Optimization ---
   chrono::steady_clock::time_point post_start = chrono::steady_clock::now();
 
   int sa_iterations_ran = 0;
@@ -93,46 +143,49 @@ int main(int argc, char *argv[]) {
   chrono::steady_clock::time_point post_end = chrono::steady_clock::now();
   chrono::steady_clock::time_point total_end = chrono::steady_clock::now();
 
-  min_cost = calculate_total_cost(vrp, best_routes);
+  weight_t final_cost = calculate_total_cost(vrp, best_routes);
+  int final_vehicles = static_cast<int>(best_routes.size());
   print_routes(best_routes);
+
+  auto ns_to_sec = [](chrono::nanoseconds ns) {
+    return static_cast<double>(ns.count()) * 1.E-9;
+  };
 
   if (verify_route(vrp, best_routes)) {
     cerr << "File: " << argv[1] << " ";
     cerr << "Preprocessing_Time: "
-         << static_cast<double>(
-                chrono::duration_cast<chrono::nanoseconds>(pre_end - pre_start)
-                    .count() *
-                1.E-9)
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(pre_end - pre_start))
          << " s ";
-    cerr << "Route_Construction_Time: "
-         << static_cast<double>(
-                chrono::duration_cast<chrono::nanoseconds>(mid_end - mid_start)
-                    .count() *
-                1.E-9)
+    cerr << "Construction_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(mid_end - mid_start))
          << " s ";
-    cerr << "Route_Minimization_Time: "
-         << static_cast<double>(
-                chrono::duration_cast<chrono::nanoseconds>(rm_end - rm_start)
-                    .count() *
-                1.E-9)
+    cerr << "Construction_Cost: " << construction_cost << " ";
+    cerr << "Construction_Vehicles: " << construction_vehicles << " ";
+    cerr << "InterRoute_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(inter_end - inter_start))
          << " s ";
+    cerr << "InterRoute_Cost: " << inter_cost << " ";
+    cerr << "InterRoute_Vehicles: " << inter_vehicles << " ";
+    cerr << "IntraRoute_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(intra_end - intra_start))
+         << " s ";
+    cerr << "IntraRoute_Cost: " << intra_cost << " ";
+    cerr << "IntraRoute_Vehicles: " << intra_vehicles << " ";
+    cerr << "RouteMin_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(rm_end - rm_start))
+         << " s ";
+    cerr << "RouteMin_Cost: " << rm_cost << " ";
+    cerr << "RouteMin_Vehicles: " << rm_vehicles << " ";
     cerr << "Routes_Eliminated: " << routes_eliminated << " ";
-    cerr << "Post_Optimization_Time: "
-         << static_cast<double>(chrono::duration_cast<chrono::nanoseconds>(
-                                    post_end - post_start)
-                                    .count() *
-                                1.E-9)
+    cerr << "SA_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(post_end - post_start))
          << " s ";
-    cerr << "Initial_Cost: " << min_cost1 << " ";
-    cerr << "Final_Cost: " << min_cost << " ";
-    cerr << "Total_Time: "
-         << static_cast<double>(chrono::duration_cast<chrono::nanoseconds>(
-                                    total_end - total_start)
-                                    .count() *
-                                1.E-9)
-         << " s ";
-    cerr << "Vehicle_Used: " << best_routes.size() << " ";
     cerr << "SA_Iterations: " << sa_iterations_ran << " ";
+    cerr << "Final_Cost: " << final_cost << " ";
+    cerr << "Final_Vehicles: " << final_vehicles << " ";
+    cerr << "Total_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(total_end - total_start))
+         << " s ";
     cerr << "route_length: " << max_length_of_route(best_routes) << " ";
     cerr << "VALID" << endl;
   }
