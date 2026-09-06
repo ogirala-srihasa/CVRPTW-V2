@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <iostream>
-#include <random>
 #include <vector>
 
 #ifdef _OPENMP
@@ -90,14 +89,13 @@ int minimize_routes(const VRP &vrp,
   int initial_count = static_cast<int>(routes.size());
   vector<node_t> unplaced;
 
-  random_device rd;
-  mt19937 rng(rd());
-
   cout << "\n=== Starting Route Minimization (max " << max_attempts
        << " attempts, " << initial_count << " routes) ===" << endl;
 
   int best_count = initial_count;
   auto best_routes = routes;
+
+  int eject_idx = 0;
 
   for (int attempt = 0; attempt < max_attempts; attempt++) {
     // Collect indices of routes with actual customers (> 2 nodes)
@@ -110,10 +108,20 @@ int minimize_routes(const VRP &vrp,
 
     if (candidate_indices.size() < 2) break;
 
-    // Randomly pick 2 distinct routes to eject
-    shuffle(candidate_indices.begin(), candidate_indices.end(), rng);
-    int idx_a = candidate_indices[0];
-    int idx_b = candidate_indices[1];
+    // Sort candidates by route size ascending (smallest routes first)
+    sort(candidate_indices.begin(), candidate_indices.end(),
+         [&routes](int a, int b) {
+           return routes[a].size() < routes[b].size();
+         });
+
+    // Reset eject_idx to 0 if current pair goes out of bounds
+    if (eject_idx + 1 >= static_cast<int>(candidate_indices.size())) {
+      eject_idx = 0;
+    }
+
+    int idx_a = candidate_indices[eject_idx];
+    int idx_b = candidate_indices[eject_idx + 1];
+    eject_idx += 2;
 
     // Erase higher index first to avoid invalidating the lower one
     if (idx_a < idx_b) swap(idx_a, idx_b);
