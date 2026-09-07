@@ -8,6 +8,7 @@
 #include <omp.h>
 #endif
 
+#include "../clark/clarke_wright.h"
 #include "../route_utils.h"
 
 using namespace std;
@@ -206,7 +207,17 @@ int minimize_routes(const VRP &vrp,
       }
     }
 
-    build_greedy_routes(vrp, routes, still_unplaced);
+    if (!still_unplaced.empty()) {
+      vector<vector<int>> leftover_cluster = {still_unplaced};
+      auto cw_routes = clarke_wright_cvrptw(vrp, leftover_cluster);
+      for (auto &route : cw_routes) {
+        route.insert(route.begin(), RouteNode(DEPOT));
+        route.push_back(RouteNode(DEPOT));
+        recalculate_pred_distances(vrp, route);
+        routes.push_back(std::move(route));
+      }
+      still_unplaced.clear();
+    }
     unplaced.clear();
 
     // Track best solution seen across all attempts
