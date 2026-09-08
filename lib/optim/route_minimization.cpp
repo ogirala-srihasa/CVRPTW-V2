@@ -125,20 +125,6 @@ int minimize_routes(const VRP &vrp,
 
     int idx_a = candidate_indices[eject_idx];
     int idx_b = candidate_indices[eject_idx + 1];
-
-    double util_a = vrp.get_route_load(routes[idx_a]) / capacity * 100.0;
-    double util_b = vrp.get_route_load(routes[idx_b]) / capacity * 100.0;
-    if (util_a > 85.0 && util_b > 85.0) {
-      if (eject_idx == 0) {
-        cout << "  All routes above 85% utilization at attempt " << attempt
-             << ", stopping." << endl;
-        break;
-      }
-      eject_idx = 0;
-      attempt--;
-      continue;
-    }
-
     eject_idx += 2;
 
     // Erase higher index first to avoid invalidating the lower one
