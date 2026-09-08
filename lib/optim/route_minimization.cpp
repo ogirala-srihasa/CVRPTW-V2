@@ -109,10 +109,13 @@ int minimize_routes(const VRP &vrp,
 
     if (candidate_indices.size() < 2) break;
 
-    // Sort candidates by route size ascending (smallest routes first)
+    // Sort candidates by capacity utilization ascending (least utilized first)
+    double capacity = vrp.getCapacity();
     sort(candidate_indices.begin(), candidate_indices.end(),
-         [&routes](int a, int b) {
-           return routes[a].size() < routes[b].size();
+         [&vrp, &routes, capacity](int a, int b) {
+           double util_a = vrp.get_route_load(routes[a]) / capacity;
+           double util_b = vrp.get_route_load(routes[b]) / capacity;
+           return util_a < util_b;
          });
 
     // Reset eject_idx to 0 if current pair goes out of bounds
@@ -122,6 +125,20 @@ int minimize_routes(const VRP &vrp,
 
     int idx_a = candidate_indices[eject_idx];
     int idx_b = candidate_indices[eject_idx + 1];
+
+    double util_a = vrp.get_route_load(routes[idx_a]) / capacity * 100.0;
+    double util_b = vrp.get_route_load(routes[idx_b]) / capacity * 100.0;
+    if (util_a > 85.0 && util_b > 85.0) {
+      if (eject_idx == 0) {
+        cout << "  All routes above 85% utilization at attempt " << attempt
+             << ", stopping." << endl;
+        break;
+      }
+      eject_idx = 0;
+      attempt--;
+      continue;
+    }
+
     eject_idx += 2;
 
     // Erase higher index first to avoid invalidating the lower one
@@ -209,7 +226,7 @@ int minimize_routes(const VRP &vrp,
 
     if (!still_unplaced.empty()) {
       vector<vector<int>> leftover_cluster = {still_unplaced};
-      auto cw_routes = clarke_wright_cvrptw(vrp, leftover_cluster);
+      auto cw_routes = clarke_wright_cvrptw_parallel(vrp, leftover_cluster);
       for (auto &route : cw_routes) {
         route.insert(route.begin(), RouteNode(DEPOT));
         route.push_back(RouteNode(DEPOT));

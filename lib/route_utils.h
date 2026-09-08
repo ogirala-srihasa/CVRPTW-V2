@@ -21,5 +21,9 @@ void print_routes(const std::vector<std::vector<RouteNode>> &routes);
 void save_routes_snapshot(const std::vector<std::vector<RouteNode>> &routes,
                           const std::string &filename);
 int max_length_of_route(const std::vector<std::vector<RouteNode>> &routes);
+void compute_utilization_stats(const VRP &vrp,
+                               const std::vector<std::vector<RouteNode>> &routes,
+                               double &max_util,
+                               double &avg_util);
 
 #endif

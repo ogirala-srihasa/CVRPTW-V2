@@ -9,7 +9,7 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
 3. **Construct initial routes** within each cluster using the Clarke-Wright savings heuristic (`lib/clark/clarke_wright.cpp`), respecting both capacity and time-window constraints. Sequential and parallel variants available. Routes are bookended with DEPOT nodes after construction.
 4. **Inter-route optimization** (`lib/optim/inter_route_optimization.cpp`). Applies three between-route improvement operators in sequence: relocate (move a customer from one route to another), swap (exchange customers between routes), and 2-opt* (reconnect route tails). Sequential and OpenMP-parallel variants.
 5. **Intra-route optimization** (`lib/optim/intra_route_optimization.cpp`). Applies within-route improvement: nearest-neighbor TSP approximation followed by 2-opt. DEPOT bookends are stripped before this phase (since `postProcessIt` reorders all route elements) and re-added afterward. Sequential and OpenMP-parallel variants.
-6. **Minimize vehicle count** (`lib/optim/route_minimization.cpp`). Deterministic size-ordered 2-route ejection: each iteration sorts routes by size ascending and ejects the pair at indices `[i, i+1]` (starting from `i = 0`, incrementing by 2 each iteration, resetting to 0 when out of bounds). Ejected customers are reinserted at the cheapest feasible position across remaining routes (parallel search). Customers with tighter time windows are inserted first. Any customers that cannot be feasibly reinserted are consolidated into new routes using the Clarke-Wright savings heuristic (`clarke_wright_cvrptw`), which merges single-customer routes by savings score until no further feasible merges exist. The best solution (fewest routes) seen across all iterations is kept. Runs up to 1000 iterations by default.
+6. **Minimize vehicle count** (`lib/optim/route_minimization.cpp`). Deterministic utilization-ordered 2-route ejection: each iteration sorts routes by capacity utilization ascending (least-utilized first) and ejects the pair at indices `[i, i+1]` (starting from `i = 0`, incrementing by 2 each iteration, resetting to 0 when out of bounds). If both routes in the candidate pair exceed 85% capacity utilization, `i` resets to 0; if the pair at index 0 is also above 85%, the loop stops early (all routes are well-packed). Ejected customers are reinserted at the cheapest feasible position across remaining routes (parallel search). Customers with tighter time windows are inserted first. Any customers that cannot be feasibly reinserted are consolidated into new routes using the parallel Clarke-Wright savings heuristic (`clarke_wright_cvrptw_parallel`), which merges single-customer routes by savings score until no further feasible merges exist. The best solution (fewest routes) seen across all iterations is kept. Runs up to 1000 iterations by default.
 7. **Post-optimize with simulated annealing** (`lib/optim/sa_optimization.cpp`). Each SA iteration applies, in order:
    - Ruin-and-recreate: randomly remove customers and greedily reinsert at cheapest feasible positions (parallel search over routes).
    - Best inter-route relocate move (parallel).
@@ -138,20 +138,30 @@ Routes are printed to `stdout`. A summary line is written to `stderr` with per-p
 | `Construction_Time` | Clarke-Wright time (seconds) |
 | `Construction_Cost` | Total distance after construction |
 | `Construction_Vehicles` | Vehicle count after construction |
+| `Construction_MaxUtil` | Maximum capacity utilization (%) after construction |
+| `Construction_AvgUtil` | Average capacity utilization (%) after construction |
 | `InterRoute_Time` | Inter-route optimization time (seconds) |
 | `InterRoute_Cost` | Total distance after inter-route optimization |
 | `InterRoute_Vehicles` | Vehicle count after inter-route optimization |
+| `InterRoute_MaxUtil` | Maximum capacity utilization (%) after inter-route optimization |
+| `InterRoute_AvgUtil` | Average capacity utilization (%) after inter-route optimization |
 | `IntraRoute_Time` | Intra-route optimization time (seconds) |
 | `IntraRoute_Cost` | Total distance after intra-route optimization |
 | `IntraRoute_Vehicles` | Vehicle count after intra-route optimization |
+| `IntraRoute_MaxUtil` | Maximum capacity utilization (%) after intra-route optimization |
+| `IntraRoute_AvgUtil` | Average capacity utilization (%) after intra-route optimization |
 | `RouteMin_Time` | Route minimization phase time (seconds) |
 | `RouteMin_Cost` | Total distance after route minimization |
 | `RouteMin_Vehicles` | Vehicle count after route minimization |
+| `RouteMin_MaxUtil` | Maximum capacity utilization (%) after route minimization |
+| `RouteMin_AvgUtil` | Average capacity utilization (%) after route minimization |
 | `Routes_Eliminated` | Net routes eliminated by route minimization |
 | `SA_Time` | SA optimization time (seconds) |
 | `SA_Iterations` | Actual SA iterations run (may be less than max due to early stopping) |
 | `Final_Cost` | Total distance after SA optimization |
 | `Final_Vehicles` | Number of routes in the final solution |
+| `Final_MaxUtil` | Maximum capacity utilization (%) in final solution |
+| `Final_AvgUtil` | Average capacity utilization (%) in final solution |
 | `Total_Time` | End-to-end wall time (seconds) |
 | `route_length` | Length of the longest route (node count) |
 | `VALID` | Printed only if all routes pass feasibility checks |
@@ -169,7 +179,7 @@ run.sh                    Quick sequential batch runner
 
 lib/
   vrp.h / vrp.cpp                     VRP data structures, instance parser, distance
-  route_utils.h / route_utils.cpp     Route cost, feasibility checks, printing
+  route_utils.h / route_utils.cpp     Route cost, feasibility checks, utilization stats, printing
   cluster/
     clustering.h / clustering.cpp     Angle-sweep and alternative clustering methods
   clark/

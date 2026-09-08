@@ -173,3 +173,23 @@ int max_length_of_route(const vector<vector<RouteNode>> &routes) {
   }
   return static_cast<int>(max_length);
 }
+
+void compute_utilization_stats(const VRP &vrp,
+                               const vector<vector<RouteNode>> &routes,
+                               double &max_util,
+                               double &avg_util) {
+  max_util = 0.0;
+  avg_util = 0.0;
+  if (routes.empty()) return;
+
+  double capacity = vrp.getCapacity();
+  double sum_util = 0.0;
+
+  for (const auto &route : routes) {
+    double util = vrp.get_route_load(route) / capacity * 100.0;
+    if (util > max_util) max_util = util;
+    sum_util += util;
+  }
+
+  avg_util = sum_util / routes.size();
+}

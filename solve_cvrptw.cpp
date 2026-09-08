@@ -78,8 +78,12 @@ int main(int argc, char *argv[]) {
 
   weight_t construction_cost = calculate_total_cost(vrp, routes);
   int construction_vehicles = static_cast<int>(routes.size());
+  double construction_max_util, construction_avg_util;
+  compute_utilization_stats(vrp, routes, construction_max_util, construction_avg_util);
   cout << "Construction Cost: " << construction_cost
-       << " Vehicles: " << construction_vehicles << endl;
+       << " Vehicles: " << construction_vehicles
+       << " MaxUtil: " << construction_max_util
+       << "% AvgUtil: " << construction_avg_util << "%" << endl;
 
   // --- Phase: Inter-route optimization ---
   chrono::steady_clock::time_point inter_start = chrono::steady_clock::now();
@@ -96,8 +100,12 @@ int main(int argc, char *argv[]) {
 
   weight_t inter_cost = calculate_total_cost(vrp, routes);
   int inter_vehicles = static_cast<int>(routes.size());
+  double inter_max_util, inter_avg_util;
+  compute_utilization_stats(vrp, routes, inter_max_util, inter_avg_util);
   cout << "Inter-Route Opt Cost: " << inter_cost
-       << " Vehicles: " << inter_vehicles << endl;
+       << " Vehicles: " << inter_vehicles
+       << " MaxUtil: " << inter_max_util
+       << "% AvgUtil: " << inter_avg_util << "%" << endl;
 
   // --- Phase: Intra-route optimization ---
   // postProcessIt expects routes WITHOUT DEPOT bookends, so strip then re-add
@@ -121,8 +129,12 @@ int main(int argc, char *argv[]) {
 
   intra_cost = calculate_total_cost(vrp, routes);
   int intra_vehicles = static_cast<int>(routes.size());
+  double intra_max_util, intra_avg_util;
+  compute_utilization_stats(vrp, routes, intra_max_util, intra_avg_util);
   cout << "Intra-Route Opt Cost: " << intra_cost
-       << " Vehicles: " << intra_vehicles << endl;
+       << " Vehicles: " << intra_vehicles
+       << " MaxUtil: " << intra_max_util
+       << "% AvgUtil: " << intra_avg_util << "%" << endl;
 
   // --- Phase: Route Minimization ---
   chrono::steady_clock::time_point rm_start = chrono::steady_clock::now();
@@ -131,8 +143,12 @@ int main(int argc, char *argv[]) {
 
   weight_t rm_cost = calculate_total_cost(vrp, routes);
   int rm_vehicles = static_cast<int>(routes.size());
+  double rm_max_util, rm_avg_util;
+  compute_utilization_stats(vrp, routes, rm_max_util, rm_avg_util);
   cout << "Route Minimization Cost: " << rm_cost
-       << " Vehicles: " << rm_vehicles << endl;
+       << " Vehicles: " << rm_vehicles
+       << " MaxUtil: " << rm_max_util
+       << "% AvgUtil: " << rm_avg_util << "%" << endl;
 
   // --- Phase: SA Post-Optimization ---
   chrono::steady_clock::time_point post_start = chrono::steady_clock::now();
@@ -145,6 +161,8 @@ int main(int argc, char *argv[]) {
 
   weight_t final_cost = calculate_total_cost(vrp, best_routes);
   int final_vehicles = static_cast<int>(best_routes.size());
+  double final_max_util, final_avg_util;
+  compute_utilization_stats(vrp, best_routes, final_max_util, final_avg_util);
   print_routes(best_routes);
 
   auto ns_to_sec = [](chrono::nanoseconds ns) {
@@ -161,21 +179,29 @@ int main(int argc, char *argv[]) {
          << " s ";
     cerr << "Construction_Cost: " << construction_cost << " ";
     cerr << "Construction_Vehicles: " << construction_vehicles << " ";
+    cerr << "Construction_MaxUtil: " << construction_max_util << " ";
+    cerr << "Construction_AvgUtil: " << construction_avg_util << " ";
     cerr << "InterRoute_Time: "
          << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(inter_end - inter_start))
          << " s ";
     cerr << "InterRoute_Cost: " << inter_cost << " ";
     cerr << "InterRoute_Vehicles: " << inter_vehicles << " ";
+    cerr << "InterRoute_MaxUtil: " << inter_max_util << " ";
+    cerr << "InterRoute_AvgUtil: " << inter_avg_util << " ";
     cerr << "IntraRoute_Time: "
          << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(intra_end - intra_start))
          << " s ";
     cerr << "IntraRoute_Cost: " << intra_cost << " ";
     cerr << "IntraRoute_Vehicles: " << intra_vehicles << " ";
+    cerr << "IntraRoute_MaxUtil: " << intra_max_util << " ";
+    cerr << "IntraRoute_AvgUtil: " << intra_avg_util << " ";
     cerr << "RouteMin_Time: "
          << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(rm_end - rm_start))
          << " s ";
     cerr << "RouteMin_Cost: " << rm_cost << " ";
     cerr << "RouteMin_Vehicles: " << rm_vehicles << " ";
+    cerr << "RouteMin_MaxUtil: " << rm_max_util << " ";
+    cerr << "RouteMin_AvgUtil: " << rm_avg_util << " ";
     cerr << "Routes_Eliminated: " << routes_eliminated << " ";
     cerr << "SA_Time: "
          << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(post_end - post_start))
@@ -183,6 +209,8 @@ int main(int argc, char *argv[]) {
     cerr << "SA_Iterations: " << sa_iterations_ran << " ";
     cerr << "Final_Cost: " << final_cost << " ";
     cerr << "Final_Vehicles: " << final_vehicles << " ";
+    cerr << "Final_MaxUtil: " << final_max_util << " ";
+    cerr << "Final_AvgUtil: " << final_avg_util << " ";
     cerr << "Total_Time: "
          << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(total_end - total_start))
          << " s ";
