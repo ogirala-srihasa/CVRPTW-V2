@@ -109,13 +109,10 @@ int minimize_routes(const VRP &vrp,
 
     if (candidate_indices.size() < 2) break;
 
-    // Sort candidates by capacity utilization ascending (least utilized first)
-    double capacity = vrp.getCapacity();
+    // Sort candidates by route size ascending (smallest routes first)
     sort(candidate_indices.begin(), candidate_indices.end(),
-         [&vrp, &routes, capacity](int a, int b) {
-           double util_a = vrp.get_route_load(routes[a]) / capacity;
-           double util_b = vrp.get_route_load(routes[b]) / capacity;
-           return util_a < util_b;
+         [&routes](int a, int b) {
+           return routes[a].size() < routes[b].size();
          });
 
     // Reset eject_idx to 0 if current pair goes out of bounds
