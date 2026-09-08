@@ -9,8 +9,10 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
 3. **Construct initial routes** within each cluster using the Clarke-Wright savings heuristic (`lib/clark/clarke_wright.cpp`), respecting both capacity and time-window constraints. Sequential and parallel variants available. Routes are bookended with DEPOT nodes after construction.
 4. **Inter-route optimization** (`lib/optim/inter_route_optimization.cpp`). Applies three between-route improvement operators in sequence: relocate (move a customer from one route to another), swap (exchange customers between routes), and 2-opt* (reconnect route tails). Sequential and OpenMP-parallel variants.
 5. **Intra-route optimization** (`lib/optim/intra_route_optimization.cpp`). Applies within-route improvement: nearest-neighbor TSP approximation followed by 2-opt. DEPOT bookends are stripped before this phase (since `postProcessIt` reorders all route elements) and re-added afterward. Sequential and OpenMP-parallel variants.
-6. **Minimize vehicle count** (`lib/optim/route_minimization.cpp`). Deterministic size-ordered 2-route ejection: each iteration sorts routes by size ascending (fewest customers first) and ejects the pair at indices `[i, i+1]` (starting from `i = 0`, incrementing by 2 each iteration, resetting to 0 when out of bounds). The iteration budget is adaptive based on route length variance: `max_route_length - avg_route_length` determines the number of attempts (≤5 → skip entirely, 6 → 100, 7 → 200, 8 → 300, 9 → 400, 10 → 500, >10 → 1000). The rationale is that similar-length routes have no short routes to dissolve, while high variance signals easy ejection targets. Ejected customers are reinserted at the cheapest feasible position across remaining routes (parallel search). Customers with tighter time windows are inserted first. Any customers that cannot be feasibly reinserted are consolidated into new routes using the parallel Clarke-Wright savings heuristic (`clarke_wright_cvrptw_parallel`), which merges single-customer routes by savings score until no further feasible merges exist. The best solution (fewest routes) seen across all iterations is kept. Utilization-based sorting was tried but produced higher overall cost — length-based sorting is a better proxy for "dissolvability" in time-windowed problems because it minimizes the number of hard-to-place customers ejected.
-7. **Post-optimize with simulated annealing** (`lib/optim/sa_optimization.cpp`). Each SA iteration applies, in order:
+6. **Minimize vehicle count** (`lib/optim/route_minimization.cpp`). Deterministic size-ordered 2-route ejection: each iteration sorts routes by size ascending (fewest customers first) and ejects the pair at indices `[i, i+1]` (starting from `i = 0`, incrementing by 2 each iteration, resetting to 0 when out of bounds). The iteration budget is adaptive based on route length variance: `max_route_length - avg_route_length` determines the number of attempts (≤6 → 100, 7 → 200, 8 → 300, 9 → 400, 10 → 500, >10 → 1000). The rationale is that similar-length routes have fewer easy ejection targets, while high variance signals short routes that are cheap to dissolve. Ejected customers are reinserted at the cheapest feasible position across remaining routes (parallel search). Customers with tighter time windows are inserted first. Any customers that cannot be feasibly reinserted are consolidated into new routes using the parallel Clarke-Wright savings heuristic (`clarke_wright_cvrptw_parallel`), which merges single-customer routes by savings score until no further feasible merges exist. The best solution (fewest routes) seen across all iterations is kept. Utilization-based sorting was tried but produced higher overall cost — length-based sorting is a better proxy for "dissolvability" in time-windowed problems because it minimizes the number of hard-to-place customers ejected.
+7. **Post-RM inter-route optimization** (`lib/optim/inter_route_optimization.cpp`). Repeats the inter-route improvement operators (relocate, swap, 2-opt*) to clean up cost regressions introduced by RM's eject-and-reinsert. Sequential and OpenMP-parallel variants.
+8. **Post-RM intra-route optimization** (`lib/optim/intra_route_optimization.cpp`). Repeats within-route improvement (nearest-neighbor TSP + 2-opt) on the post-RM routes, with the same DEPOT-strip/re-add pattern as step 5. Sequential and OpenMP-parallel variants.
+9. **Post-optimize with simulated annealing** (`lib/optim/sa_optimization.cpp`). Each SA iteration applies, in order:
    - Ruin-and-recreate: randomly remove customers and greedily reinsert at cheapest feasible positions (parallel search over routes).
    - Best inter-route relocate move (parallel).
    - Best inter-route swap move (parallel).
@@ -20,7 +22,7 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
    The combined delta is accepted or rejected via the SA criterion (Boltzmann acceptance, geometric cooling with alpha = 0.9995, T0 = 2% of initial cost). The loop runs up to `sa_iterations` (default 10,000) but stops early if:
    - **Stagnation**: best cost improves by less than 0.1% over a 300-iteration window.
    - **Temperature floor**: temperature drops below `1e-5 * current_cost` (SA has degenerated into greedy search).
-8. **Verify and report**: check capacity and time-window feasibility for all routes, print route details and per-phase timing/cost/vehicle summary.
+10. **Verify and report**: check capacity and time-window feasibility for all routes, print route details and per-phase timing/cost/vehicle summary.
 
 Distances are computed on-the-fly (Euclidean, `VRP::get_dist()`), not precomputed into a matrix.
 
@@ -148,6 +150,12 @@ Routes are printed to `stdout`. A summary line is written to `stderr` with per-p
 | `RouteMin_Cost` | Total distance after route minimization |
 | `RouteMin_Vehicles` | Vehicle count after route minimization |
 | `Routes_Eliminated` | Net routes eliminated by route minimization |
+| `PostRM_InterRoute_Time` | Post-RM inter-route optimization time (seconds) |
+| `PostRM_InterRoute_Cost` | Total distance after post-RM inter-route optimization |
+| `PostRM_InterRoute_Vehicles` | Vehicle count after post-RM inter-route optimization |
+| `PostRM_IntraRoute_Time` | Post-RM intra-route optimization time (seconds) |
+| `PostRM_IntraRoute_Cost` | Total distance after post-RM intra-route optimization |
+| `PostRM_IntraRoute_Vehicles` | Vehicle count after post-RM intra-route optimization |
 | `SA_Time` | SA optimization time (seconds) |
 | `SA_Iterations` | Actual SA iterations run (may be less than max due to early stopping) |
 | `Final_Cost` | Total distance after SA optimization |

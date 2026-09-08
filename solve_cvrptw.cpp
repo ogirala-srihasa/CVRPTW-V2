@@ -140,9 +140,8 @@ int main(int argc, char *argv[]) {
   avg_route_len /= routes.size();
   int route_len_diff = max_route_len - static_cast<int>(avg_route_len);
 
-  int rm_iterations = 0;
-  if (route_len_diff <= 5) rm_iterations = 0;
-  else if (route_len_diff == 6) rm_iterations = 100;
+  int rm_iterations;
+  if (route_len_diff <= 6) rm_iterations = 100;
   else if (route_len_diff == 7) rm_iterations = 200;
   else if (route_len_diff == 8) rm_iterations = 300;
   else if (route_len_diff == 9) rm_iterations = 400;
@@ -159,6 +158,48 @@ int main(int argc, char *argv[]) {
   // compute_utilization_stats(vrp, routes, rm_max_util, rm_avg_util);
   cout << "Route Minimization Cost: " << rm_cost
        << " Vehicles: " << rm_vehicles << endl;
+
+  // --- Phase: Post-RM Inter-route optimization ---
+  chrono::steady_clock::time_point post_rm_inter_start = chrono::steady_clock::now();
+#ifdef USE_PARALLEL
+  inter_route_relocate_parallel(vrp, routes);
+  inter_route_swap_parallel(vrp, routes);
+  inter_route_2opt_star_parallel(vrp, routes);
+#else
+  inter_route_relocate(vrp, routes);
+  inter_route_swap(vrp, routes);
+  inter_route_2opt_star(vrp, routes);
+#endif
+  chrono::steady_clock::time_point post_rm_inter_end = chrono::steady_clock::now();
+
+  weight_t post_rm_inter_cost = calculate_total_cost(vrp, routes);
+  int post_rm_inter_vehicles = static_cast<int>(routes.size());
+  cout << "Post-RM Inter-Route Opt Cost: " << post_rm_inter_cost
+       << " Vehicles: " << post_rm_inter_vehicles << endl;
+
+  // --- Phase: Post-RM Intra-route optimization ---
+  chrono::steady_clock::time_point post_rm_intra_start = chrono::steady_clock::now();
+  for (auto &route : routes) {
+    if (!route.empty() && route.front().id == DEPOT) route.erase(route.begin());
+    if (!route.empty() && route.back().id == DEPOT) route.pop_back();
+  }
+  weight_t post_rm_intra_cost;
+#ifdef USE_PARALLEL
+  routes = postProcessIt_parallel(vrp, routes, post_rm_intra_cost);
+#else
+  routes = postProcessIt(vrp, routes, post_rm_intra_cost);
+#endif
+  for (auto &route : routes) {
+    route.insert(route.begin(), RouteNode(DEPOT));
+    route.push_back(RouteNode(DEPOT));
+    recalculate_pred_distances(vrp, route);
+  }
+  chrono::steady_clock::time_point post_rm_intra_end = chrono::steady_clock::now();
+
+  post_rm_intra_cost = calculate_total_cost(vrp, routes);
+  int post_rm_intra_vehicles = static_cast<int>(routes.size());
+  cout << "Post-RM Intra-Route Opt Cost: " << post_rm_intra_cost
+       << " Vehicles: " << post_rm_intra_vehicles << endl;
 
   // --- Phase: SA Post-Optimization ---
   chrono::steady_clock::time_point post_start = chrono::steady_clock::now();
@@ -213,6 +254,16 @@ int main(int argc, char *argv[]) {
     // cerr << "RouteMin_MaxUtil: " << rm_max_util << " ";
     // cerr << "RouteMin_AvgUtil: " << rm_avg_util << " ";
     cerr << "Routes_Eliminated: " << routes_eliminated << " ";
+    cerr << "PostRM_InterRoute_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(post_rm_inter_end - post_rm_inter_start))
+         << " s ";
+    cerr << "PostRM_InterRoute_Cost: " << post_rm_inter_cost << " ";
+    cerr << "PostRM_InterRoute_Vehicles: " << post_rm_inter_vehicles << " ";
+    cerr << "PostRM_IntraRoute_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(post_rm_intra_end - post_rm_intra_start))
+         << " s ";
+    cerr << "PostRM_IntraRoute_Cost: " << post_rm_intra_cost << " ";
+    cerr << "PostRM_IntraRoute_Vehicles: " << post_rm_intra_vehicles << " ";
     cerr << "SA_Time: "
          << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(post_end - post_start))
          << " s ";
