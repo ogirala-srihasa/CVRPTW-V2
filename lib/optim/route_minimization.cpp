@@ -98,9 +98,6 @@ int minimize_routes(const VRP &vrp,
   auto best_routes = routes;
 
   int eject_idx = 0;
-  vector<node_t> all_unplaced;
-  int num_customers = static_cast<int>(vrp.getSize()) - 1;
-  int unplaced_threshold = max(1, num_customers * 5 / 100);
 
   for (int attempt = 0; attempt < max_attempts; attempt++) {
     // Collect indices of routes with actual customers (> 2 nodes)
@@ -150,6 +147,7 @@ int minimize_routes(const VRP &vrp,
          });
 
     // Try to place all unplaced customers into existing routes
+    vector<node_t> still_unplaced;
     int num_routes = static_cast<int>(routes.size());
 
     for (node_t cust : unplaced) {
@@ -206,53 +204,22 @@ int minimize_routes(const VRP &vrp,
         recalculate_pred_distances(vrp, routes[best_route]);
         num_routes = static_cast<int>(routes.size());
       } else {
-        all_unplaced.push_back(cust);
+        still_unplaced.push_back(cust);
       }
     }
     unplaced.clear();
 
-    // Consolidate leftovers: every 100 iterations, at end, or when unplaced hits 5% of customers
-    if (!all_unplaced.empty() &&
-        ((attempt + 1) % 100 == 0 ||
-         attempt == max_attempts - 1 ||
-         static_cast<int>(all_unplaced.size()) >= unplaced_threshold)) {
-      vector<vector<int>> leftover_cluster = {all_unplaced};
-      auto cw_routes = clarke_wright_cvrptw_parallel(vrp, leftover_cluster);
-
+    if (!still_unplaced.empty()) {
+      vector<vector<int>> leftover_cluster = {still_unplaced};
+      auto cw_routes = clarke_wright_cvrptw(vrp, leftover_cluster);
       for (auto &route : cw_routes) {
         route.insert(route.begin(), RouteNode(DEPOT));
         route.push_back(RouteNode(DEPOT));
         recalculate_pred_distances(vrp, route);
         routes.push_back(std::move(route));
       }
-      all_unplaced.clear();
+      still_unplaced.clear();
     }
-
-    // Track best solution only when all customers are accounted for
-    if (all_unplaced.empty()) {
-      int current_count = static_cast<int>(routes.size());
-      double current_cost = calculate_total_cost(vrp, routes);
-      if (current_count < best_count ||
-          (current_count == best_count && current_cost < best_cost)) {
-        best_count = current_count;
-        best_cost = current_cost;
-        best_routes = routes;
-      }
-    }
-  }
-
-  // Final consolidation if any leftovers remain
-  if (!all_unplaced.empty()) {
-    vector<vector<int>> leftover_cluster = {all_unplaced};
-    auto cw_routes = clarke_wright_cvrptw_parallel(vrp, leftover_cluster);
-
-    for (auto &route : cw_routes) {
-      route.insert(route.begin(), RouteNode(DEPOT));
-      route.push_back(RouteNode(DEPOT));
-      recalculate_pred_distances(vrp, route);
-      routes.push_back(std::move(route));
-    }
-    all_unplaced.clear();
 
     int current_count = static_cast<int>(routes.size());
     double current_cost = calculate_total_cost(vrp, routes);
