@@ -10,8 +10,6 @@
 
 #include "../clark/clarke_wright.h"
 #include "../route_utils.h"
-#include "inter_route_optimization.h"
-#include "intra_route_optimization.h"
 
 using namespace std;
 
@@ -101,6 +99,8 @@ int minimize_routes(const VRP &vrp,
 
   int eject_idx = 0;
   vector<node_t> all_unplaced;
+  int num_customers = static_cast<int>(vrp.getSize()) - 1;
+  int unplaced_threshold = max(1, num_customers * 5 / 100);
 
   for (int attempt = 0; attempt < max_attempts; attempt++) {
     // Collect indices of routes with actual customers (> 2 nodes)
@@ -211,47 +211,18 @@ int minimize_routes(const VRP &vrp,
     }
     unplaced.clear();
 
-    // Every 100 iterations, consolidate accumulated leftovers
-    if (!all_unplaced.empty() && ((attempt + 1) % 100 == 0 || attempt == max_attempts - 1)) {
+    // Consolidate leftovers: every 100 iterations, at end, or when unplaced hits 5% of customers
+    if (!all_unplaced.empty() &&
+        ((attempt + 1) % 100 == 0 ||
+         attempt == max_attempts - 1 ||
+         static_cast<int>(all_unplaced.size()) >= unplaced_threshold)) {
       vector<vector<int>> leftover_cluster = {all_unplaced};
       auto cw_routes = clarke_wright_cvrptw_parallel(vrp, leftover_cluster);
 
-      // Add DEPOT bookends
       for (auto &route : cw_routes) {
         route.insert(route.begin(), RouteNode(DEPOT));
         route.push_back(RouteNode(DEPOT));
         recalculate_pred_distances(vrp, route);
-      }
-
-      // Inter-route optimization on leftover routes
-#ifdef USE_PARALLEL
-      inter_route_relocate_parallel(vrp, cw_routes);
-      inter_route_swap_parallel(vrp, cw_routes);
-      inter_route_2opt_star_parallel(vrp, cw_routes);
-#else
-      inter_route_relocate(vrp, cw_routes);
-      inter_route_swap(vrp, cw_routes);
-      inter_route_2opt_star(vrp, cw_routes);
-#endif
-
-      // Intra-route optimization: strip DEPOT bookends, optimize, re-add
-      for (auto &route : cw_routes) {
-        if (!route.empty() && route.front().id == DEPOT) route.erase(route.begin());
-        if (!route.empty() && route.back().id == DEPOT) route.pop_back();
-      }
-      weight_t leftover_cost;
-#ifdef USE_PARALLEL
-      cw_routes = postProcessIt_parallel(vrp, cw_routes, leftover_cost);
-#else
-      cw_routes = postProcessIt(vrp, cw_routes, leftover_cost);
-#endif
-      for (auto &route : cw_routes) {
-        route.insert(route.begin(), RouteNode(DEPOT));
-        route.push_back(RouteNode(DEPOT));
-        recalculate_pred_distances(vrp, route);
-      }
-
-      for (auto &route : cw_routes) {
         routes.push_back(std::move(route));
       }
       all_unplaced.clear();
@@ -279,35 +250,6 @@ int minimize_routes(const VRP &vrp,
       route.insert(route.begin(), RouteNode(DEPOT));
       route.push_back(RouteNode(DEPOT));
       recalculate_pred_distances(vrp, route);
-    }
-
-#ifdef USE_PARALLEL
-    inter_route_relocate_parallel(vrp, cw_routes);
-    inter_route_swap_parallel(vrp, cw_routes);
-    inter_route_2opt_star_parallel(vrp, cw_routes);
-#else
-    inter_route_relocate(vrp, cw_routes);
-    inter_route_swap(vrp, cw_routes);
-    inter_route_2opt_star(vrp, cw_routes);
-#endif
-
-    for (auto &route : cw_routes) {
-      if (!route.empty() && route.front().id == DEPOT) route.erase(route.begin());
-      if (!route.empty() && route.back().id == DEPOT) route.pop_back();
-    }
-    weight_t leftover_cost;
-#ifdef USE_PARALLEL
-    cw_routes = postProcessIt_parallel(vrp, cw_routes, leftover_cost);
-#else
-    cw_routes = postProcessIt(vrp, cw_routes, leftover_cost);
-#endif
-    for (auto &route : cw_routes) {
-      route.insert(route.begin(), RouteNode(DEPOT));
-      route.push_back(RouteNode(DEPOT));
-      recalculate_pred_distances(vrp, route);
-    }
-
-    for (auto &route : cw_routes) {
       routes.push_back(std::move(route));
     }
     all_unplaced.clear();
