@@ -9,7 +9,7 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
 3. **Construct initial routes** within each cluster using the Clarke-Wright savings heuristic (`lib/clark/clarke_wright.cpp`), respecting both capacity and time-window constraints. Sequential and parallel variants available. Routes are bookended with DEPOT nodes after construction.
 4. **Inter-route optimization** (`lib/optim/inter_route_optimization.cpp`). Applies three between-route improvement operators in sequence: relocate (move a customer from one route to another), swap (exchange customers between routes), and 2-opt* (reconnect route tails). Sequential and OpenMP-parallel variants.
 5. **Intra-route optimization** (`lib/optim/intra_route_optimization.cpp`). Applies within-route improvement: nearest-neighbor TSP approximation followed by 2-opt. DEPOT bookends are stripped before this phase (since `postProcessIt` reorders all route elements) and re-added afterward. Sequential and OpenMP-parallel variants.
-6. **Merged SA + Route Minimization** (`lib/optim/sa_optimization.cpp`). Combines vehicle-count reduction with SA-based cost improvement in a single loop (default 1,000 iterations). Each iteration:
+6. **Merged SA + Route Minimization** (`lib/optim/sa_optimization.cpp`). Combines vehicle-count reduction with SA-based cost improvement in a single loop (default 10,000 iterations). Each iteration:
    1. Sort routes by capacity utilization ascending (lowest-utilized first).
    2. **Early exit**: if `routes[0]` (least utilized) is at 100% utilization, all routes are fully packed — break.
    3. **Bounds check**: if walking index `i+1 >= num_routes`, reset `i = 0`.
@@ -56,7 +56,7 @@ make clean
 ```
 
 - `angle_range` — angular width (in degrees) of each sweep cluster.
-- `sa_rm_iterations` — maximum merged SA+RM iterations (default: 1,000). Early stopping triggers if all routes reach 100% utilization.
+- `sa_rm_iterations` — maximum merged SA+RM iterations (default: 10,000). Early stopping via all-routes-100%-utilized, stagnation, or temperature floor.
 - `sa_only_iterations` — maximum SA-only iterations (default: 10,000). Early stopping via stagnation or temperature floor.
 
 Examples:
@@ -79,7 +79,7 @@ bash test.sh
 # Parallel
 bash test.sh --parallel
 
-# Custom SA-only iterations (SA+RM is always 1000)
+# Custom SA-only iterations (SA+RM is always 10000)
 bash test.sh --parallel --iterations 5000
 ```
 
@@ -91,7 +91,7 @@ Builds sequential and runs all instances at a fixed angle of 30:
 
 ```bash
 bash run.sh
-bash run.sh --iterations 5000   # controls SA-only iterations; SA+RM is always 1000
+bash run.sh --iterations 5000   # controls SA-only iterations; SA+RM is always 10000
 ```
 
 ### `test_huge.sh` — 10,000-customer XMLTW instances
@@ -105,13 +105,13 @@ bash test_huge.sh
 # Parallel
 bash test_huge.sh --parallel
 
-# Custom SA-only iterations (SA+RM is always 1000)
+# Custom SA-only iterations (SA+RM is always 10000)
 bash test_huge.sh --parallel --iterations 20000
 ```
 
 Results go to `outputs/result_huge.csv`.
 
-All scripts hardcode SA+RM at 1,000 iterations and default to 10,000 SA-only iterations if `--iterations` is not specified. The solver binary itself defaults to 1,000 SA+RM and 10,000 SA-only when no arguments are given.
+All scripts hardcode SA+RM at 10,000 iterations and default to 10,000 SA-only iterations if `--iterations` is not specified. Both phases have early stopping, so actual iterations are typically much lower. The solver binary itself defaults to 10,000 for both when no arguments are given.
 
 ### SLURM (HPC cluster)
 

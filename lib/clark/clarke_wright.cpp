@@ -11,7 +11,6 @@ using namespace std;
 
 vector<vector<RouteNode>>
 clarke_wright_cvrptw(const VRP &vrp, const vector<vector<int>> &clusters) {
-  cout << "Running sequential Clarke & Wright..." << endl;
   double alpha = 0.7;
   double beta = 0.3;
 

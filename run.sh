@@ -25,7 +25,7 @@ angle=30
 for infile in testcase/*; do
     filename=$(basename "$infile")
     outfile="outputs/${filename}.out"
-    ./solve_cvrptw "$infile" "$angle" 1000 "$sa_iterations" > "$outfile" 2>> "$result_file"
+    ./solve_cvrptw "$infile" "$angle" 10000 "$sa_iterations" > "$outfile" 2>> "$result_file"
     echo "Processed $infile -> $outfile"
 done
 echo "All files processed. Results are in outputs/result.csv"
