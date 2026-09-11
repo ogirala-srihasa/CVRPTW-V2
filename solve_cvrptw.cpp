@@ -18,7 +18,7 @@ int main(int argc, char *argv[]) {
   if (argc < 3) {
     cout << "seqCVRPTW version 3" << '\n';
     cout << "Usage: " << argv[0]
-         << " toy.vrp angle_range [sa_iterations]" << '\n';
+         << " toy.vrp angle_range [sa_rm_iterations] [sa_only_iterations]" << '\n';
     exit(1);
   }
 
@@ -36,7 +36,8 @@ int main(int argc, char *argv[]) {
   (void)n_clusters;
 
   double angle_range = stod(argv[2]);
-  int sa_iterations = (argc >= 4) ? stoi(argv[3]) : 1000;
+  int sa_rm_iterations = (argc >= 4) ? stoi(argv[3]) : 1000;
+  int sa_only_iters = (argc >= 5) ? stoi(argv[4]) : 10000;
 
   // vector<vector<node_t>> clusters =
   //     clustering_angle_sweep_parallel(vrp, angle_range, 1000);
@@ -132,8 +133,8 @@ int main(int argc, char *argv[]) {
   // --- Phase: Merged SA + Route Minimization ---
   chrono::steady_clock::time_point sa_rm_start = chrono::steady_clock::now();
 
-  int sa_iterations_ran = 0;
-  auto best_routes = sa_post_optimization(vrp, routes, sa_iterations, &sa_iterations_ran);
+  int sa_rm_iterations_ran = 0;
+  auto best_routes = sa_post_optimization(vrp, routes, sa_rm_iterations, &sa_rm_iterations_ran);
 
   chrono::steady_clock::time_point sa_rm_end = chrono::steady_clock::now();
 
@@ -142,36 +143,18 @@ int main(int argc, char *argv[]) {
   cout << "SA+RM Cost: " << sa_rm_cost
        << " Vehicles: " << sa_rm_vehicles << endl;
 
-  // --- Phase: Final Inter-Route Optimization ---
-  chrono::steady_clock::time_point final_opt_start = chrono::steady_clock::now();
-#ifdef USE_PARALLEL
-  inter_route_relocate_parallel(vrp, best_routes);
-  inter_route_swap_parallel(vrp, best_routes);
-  inter_route_2opt_star_parallel(vrp, best_routes);
-#else
-  inter_route_relocate(vrp, best_routes);
-  inter_route_swap(vrp, best_routes);
-  inter_route_2opt_star(vrp, best_routes);
-#endif
+  // --- Phase: SA-Only Optimization ---
+  chrono::steady_clock::time_point sa_only_start = chrono::steady_clock::now();
 
-  // --- Phase: Final Intra-Route Optimization ---
-  for (auto &route : best_routes) {
-    if (!route.empty() && route.front().id == DEPOT) route.erase(route.begin());
-    if (!route.empty() && route.back().id == DEPOT) route.pop_back();
-  }
-  weight_t final_opt_cost;
-#ifdef USE_PARALLEL
-  best_routes = postProcessIt_parallel(vrp, best_routes, final_opt_cost);
-#else
-  best_routes = postProcessIt(vrp, best_routes, final_opt_cost);
-#endif
-  for (auto &route : best_routes) {
-    route.insert(route.begin(), RouteNode(DEPOT));
-    route.push_back(RouteNode(DEPOT));
-    recalculate_pred_distances(vrp, route);
-  }
+  int sa_only_iterations_ran = 0;
+  best_routes = sa_only_optimization(vrp, best_routes, sa_only_iters, &sa_only_iterations_ran);
 
-  chrono::steady_clock::time_point final_opt_end = chrono::steady_clock::now();
+  chrono::steady_clock::time_point sa_only_end = chrono::steady_clock::now();
+
+  weight_t sa_only_cost = calculate_total_cost(vrp, best_routes);
+  int sa_only_vehicles = static_cast<int>(best_routes.size());
+  cout << "SA-Only Cost: " << sa_only_cost
+       << " Vehicles: " << sa_only_vehicles << endl;
   chrono::steady_clock::time_point total_end = chrono::steady_clock::now();
 
   weight_t final_cost = calculate_total_cost(vrp, best_routes);
@@ -211,12 +194,15 @@ int main(int argc, char *argv[]) {
     cerr << "SA_RM_Time: "
          << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(sa_rm_end - sa_rm_start))
          << " s ";
-    cerr << "SA_RM_Iterations: " << sa_iterations_ran << " ";
+    cerr << "SA_RM_Iterations: " << sa_rm_iterations_ran << " ";
     cerr << "SA_RM_Cost: " << sa_rm_cost << " ";
     cerr << "SA_RM_Vehicles: " << sa_rm_vehicles << " ";
-    cerr << "FinalOpt_Time: "
-         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(final_opt_end - final_opt_start))
+    cerr << "SA_Only_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(sa_only_end - sa_only_start))
          << " s ";
+    cerr << "SA_Only_Iterations: " << sa_only_iterations_ran << " ";
+    cerr << "SA_Only_Cost: " << sa_only_cost << " ";
+    cerr << "SA_Only_Vehicles: " << sa_only_vehicles << " ";
     cerr << "Final_Cost: " << final_cost << " ";
     cerr << "Final_Vehicles: " << final_vehicles << " ";
     // cerr << "Final_MaxUtil: " << final_max_util << " ";

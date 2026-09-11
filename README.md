@@ -20,7 +20,7 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
    8. Track global best: **lowest cost first**, vehicle count as tiebreaker.
    
    The rationale for utilization-based ejection (vs. the previous size-based approach): low-utilization routes have more slack in surrounding routes to absorb their customers, whereas small routes might contain high-demand customers that are hard to redistribute. Interleaving SA operators with each ejection lets the solver immediately clean up after redistributions, rather than deferring optimization to a separate phase.
-7. **Final inter-route + intra-route optimization**. After the merged SA+RM loop, a final pass of all three inter-route operators (relocate, swap, 2-opt*) followed by full intra-route optimization (TSP-approx + 2-opt) polishes the best solution found. This recovers any cost degradation from the last ejection cycles.
+7. **SA-only optimization** (`lib/optim/sa_optimization.cpp`, `sa_only_optimization`). A pure simulated annealing loop (default 10,000 iterations) that polishes the best solution from the SA+RM phase. Each iteration: ruin-and-recreate (remove 14 random customers, cheapest feasible reinsertion via parallel search) → best relocate → best swap → best 2-opt* → intra-route 2-opt. SA acceptance (Boltzmann, geometric cooling, alpha = 0.9995, T0 = 2% of initial cost). Early stopping via stagnation (<0.1% improvement over 300-iteration window) or temperature floor (T < 1e-5 * cost). This replaces the previous deterministic inter+intra final pass — the SA framework allows accepting temporarily worse moves, enabling escape from local optima that deterministic operators cannot.
 8. **Verify and report**: check capacity and time-window feasibility for all routes, print route details and per-phase timing/cost/vehicle summary.
 
 Distances are computed on-the-fly (Euclidean, `VRP::get_dist()`), not precomputed into a matrix.
@@ -52,17 +52,18 @@ make clean
 ## Run a Single Instance
 
 ```bash
-./solve_cvrptw <instance_file> <angle_range> [sa_iterations]
+./solve_cvrptw <instance_file> <angle_range> [sa_rm_iterations] [sa_only_iterations]
 ```
 
 - `angle_range` — angular width (in degrees) of each sweep cluster.
-- `sa_iterations` — maximum merged SA+RM iterations (default: 1,000). Early stopping triggers if all routes reach 100% utilization.
+- `sa_rm_iterations` — maximum merged SA+RM iterations (default: 1,000). Early stopping triggers if all routes reach 100% utilization.
+- `sa_only_iterations` — maximum SA-only iterations (default: 10,000). Early stopping via stagnation or temperature floor.
 
 Examples:
 
 ```bash
 ./solve_cvrptw testcase/C1_10_1.txt 180
-./solve_cvrptw testcase/C1_10_1.txt 180 5000
+./solve_cvrptw testcase/C1_10_1.txt 180 1000 5000
 ```
 
 ## Batch Experiments
@@ -78,7 +79,7 @@ bash test.sh
 # Parallel
 bash test.sh --parallel
 
-# Custom SA iterations
+# Custom SA-only iterations (SA+RM is always 1000)
 bash test.sh --parallel --iterations 5000
 ```
 
@@ -90,7 +91,7 @@ Builds sequential and runs all instances at a fixed angle of 30:
 
 ```bash
 bash run.sh
-bash run.sh --iterations 5000
+bash run.sh --iterations 5000   # controls SA-only iterations; SA+RM is always 1000
 ```
 
 ### `test_huge.sh` — 10,000-customer XMLTW instances
@@ -104,13 +105,13 @@ bash test_huge.sh
 # Parallel
 bash test_huge.sh --parallel
 
-# Custom SA iterations
+# Custom SA-only iterations (SA+RM is always 1000)
 bash test_huge.sh --parallel --iterations 20000
 ```
 
 Results go to `outputs/result_huge.csv`.
 
-All scripts default to 10,000 SA iterations if `--iterations` is not specified (the solver binary itself defaults to 1,000 when no argument is given).
+All scripts hardcode SA+RM at 1,000 iterations and default to 10,000 SA-only iterations if `--iterations` is not specified. The solver binary itself defaults to 1,000 SA+RM and 10,000 SA-only when no arguments are given.
 
 ### SLURM (HPC cluster)
 
@@ -149,7 +150,10 @@ Routes are printed to `stdout`. A summary line is written to `stderr` with per-p
 | `SA_RM_Iterations` | Actual SA+RM iterations run (may be less than max if all routes hit 100% utilization) |
 | `SA_RM_Cost` | Total distance after merged SA+RM |
 | `SA_RM_Vehicles` | Vehicle count after merged SA+RM |
-| `FinalOpt_Time` | Final inter+intra optimization time (seconds) |
+| `SA_Only_Time` | SA-only optimization time (seconds) |
+| `SA_Only_Iterations` | Actual SA-only iterations run (may be less than max due to early stopping) |
+| `SA_Only_Cost` | Total distance after SA-only optimization |
+| `SA_Only_Vehicles` | Vehicle count after SA-only optimization |
 | `Final_Cost` | Total distance of final solution |
 | `Final_Vehicles` | Number of routes in the final solution |
 | `Total_Time` | End-to-end wall time (seconds) |
@@ -176,7 +180,7 @@ lib/
     clarke_wright.h / clarke_wright.cpp   Clarke-Wright savings heuristic (seq + parallel)
   optim/
     route_minimization.h / .cpp                    Vehicle count reduction (standalone, currently unused — logic merged into SA)
-    sa_optimization.h / sa_optimization.cpp       Merged SA + route minimization loop
+    sa_optimization.h / sa_optimization.cpp       Merged SA+RM loop + pure SA-only optimization
     intra_route_optimization.h / .cpp             Within-route: nearest-neighbor, 2-opt
     inter_route_optimization.h / .cpp             Between-route: relocate, swap, 2-opt*
 

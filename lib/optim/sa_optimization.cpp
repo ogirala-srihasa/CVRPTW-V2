@@ -728,3 +728,100 @@ vector<vector<RouteNode>> sa_post_optimization(
 
   return best_routes;
 }
+
+// ---------------------------------------------------------------------------
+// 7. Pure SA optimization loop (no route ejection)
+//    Ruin-and-recreate + SA operators + SA acceptance.
+//    Early stopping: stagnation (300-iter window, <0.1% improvement) and
+//    temperature floor (T < 1e-5 * cost).
+// ---------------------------------------------------------------------------
+vector<vector<RouteNode>> sa_only_optimization(
+    const VRP &vrp,
+    vector<vector<RouteNode>> routes,
+    int max_iterations,
+    int *iterations_ran) {
+
+  cout << "\n=== Starting SA-Only Optimization (" << max_iterations
+       << " iterations, " << routes.size() << " routes) ===" << endl;
+
+  double current_cost = calculate_total_cost(vrp, routes);
+  double T0 = 0.02 * current_cost;
+  double alpha = 0.9995;
+  double temperature = T0;
+
+  auto best_routes = routes;
+  double best_cost = current_cost;
+  double best_cost_at_window_start = best_cost;
+
+  random_device rd;
+  mt19937 rng(rd());
+
+  const int NUM_REMOVE = 14;
+
+  const int    STAGNATION_WINDOW  = 300;
+  const double STAGNATION_EPSILON = 0.001;
+  const double TEMP_FLOOR_FACTOR  = 1e-5;
+
+  cout << "  Initial cost: " << current_cost
+       << "  T0: " << T0 << endl;
+
+  bool early_stopped = false;
+  int actual_iterations = max_iterations;
+
+  for (int iter = 0; iter < max_iterations; iter++) {
+    auto saved = routes;
+    double old_cost = current_cost;
+
+    ruin_and_recreate(vrp, routes, NUM_REMOVE, rng);
+    sa_best_relocate_move(vrp, routes);
+    sa_best_swap_move(vrp, routes);
+    sa_best_2opt_star_move(vrp, routes);
+    sa_intra_route_2opt(vrp, routes);
+
+    double new_cost = calculate_total_cost(vrp, routes);
+    double delta = new_cost - old_cost;
+
+    if (sa_accept(delta, temperature, rng)) {
+      current_cost = new_cost;
+    } else {
+      routes = std::move(saved);
+    }
+
+    if (current_cost < best_cost) {
+      best_cost = current_cost;
+      best_routes = routes;
+    }
+
+    temperature *= alpha;
+
+    if (temperature < TEMP_FLOOR_FACTOR * current_cost) {
+      cout << "  SA-Only early stop (temperature floor) at iteration "
+           << (iter + 1) << ": T=" << temperature << endl;
+      actual_iterations = iter + 1;
+      early_stopped = true;
+      break;
+    }
+
+    if ((iter + 1) % STAGNATION_WINDOW == 0) {
+      double relative_improvement =
+          (best_cost_at_window_start - best_cost) / best_cost_at_window_start;
+      if (relative_improvement < STAGNATION_EPSILON) {
+        cout << "  SA-Only early stop (stagnation) at iteration " << (iter + 1)
+             << ": relative improvement " << relative_improvement
+             << " over last " << STAGNATION_WINDOW << " iterations" << endl;
+        actual_iterations = iter + 1;
+        early_stopped = true;
+        break;
+      }
+      best_cost_at_window_start = best_cost;
+    }
+  }
+
+  cout << "=== SA-Only " << (early_stopped ? "early-stopped" : "complete")
+       << ". Best cost: " << best_cost
+       << "  Vehicles: " << best_routes.size() << " ===" << endl;
+
+  if (iterations_ran) *iterations_ran = actual_iterations;
+
+  return best_routes;
+}
