@@ -7,7 +7,6 @@
 #include "lib/cluster/clustering.h"
 #include "lib/optim/inter_route_optimization.h"
 #include "lib/optim/intra_route_optimization.h"
-#include "lib/optim/route_minimization.h"
 #include "lib/optim/sa_optimization.h"
 #include "lib/route_utils.h"
 #include "lib/vrp.h"
@@ -37,7 +36,7 @@ int main(int argc, char *argv[]) {
   (void)n_clusters;
 
   double angle_range = stod(argv[2]);
-  int sa_iterations = (argc >= 4) ? stoi(argv[3]) : 10000;
+  int sa_iterations = (argc >= 4) ? stoi(argv[3]) : 1000;
 
   // vector<vector<node_t>> clusters =
   //     clustering_angle_sweep_parallel(vrp, angle_range, 1000);
@@ -130,48 +129,53 @@ int main(int argc, char *argv[]) {
   cout << "Intra-Route Opt Cost: " << intra_cost
        << " Vehicles: " << intra_vehicles << endl;
 
-  // --- Phase: Route Minimization ---
-  // Adaptive iteration budget based on route length variance
-  int max_route_len = max_length_of_route(routes);
-  double avg_route_len = 0.0;
-  for (const auto &route : routes) {
-    avg_route_len += route.size();
-  }
-  avg_route_len /= routes.size();
-  int route_len_diff = max_route_len - static_cast<int>(avg_route_len);
-
-  int rm_iterations;
-  if (route_len_diff <= 6) rm_iterations = 100;
-  else if (route_len_diff == 7) rm_iterations = 200;
-  else if (route_len_diff == 8) rm_iterations = 300;
-  else if (route_len_diff == 9) rm_iterations = 400;
-  else if (route_len_diff == 10) rm_iterations = 500;
-  else rm_iterations = 1000;
-
-  chrono::steady_clock::time_point rm_start = chrono::steady_clock::now();
-  int routes_eliminated = minimize_routes(vrp, routes, rm_iterations);
-  chrono::steady_clock::time_point rm_end = chrono::steady_clock::now();
-
-  weight_t rm_cost = calculate_total_cost(vrp, routes);
-  int rm_vehicles = static_cast<int>(routes.size());
-  // double rm_max_util, rm_avg_util;
-  // compute_utilization_stats(vrp, routes, rm_max_util, rm_avg_util);
-  cout << "Route Minimization Cost: " << rm_cost
-       << " Vehicles: " << rm_vehicles << endl;
-
-  // --- Phase: SA Post-Optimization ---
-  chrono::steady_clock::time_point post_start = chrono::steady_clock::now();
+  // --- Phase: Merged SA + Route Minimization ---
+  chrono::steady_clock::time_point sa_rm_start = chrono::steady_clock::now();
 
   int sa_iterations_ran = 0;
   auto best_routes = sa_post_optimization(vrp, routes, sa_iterations, &sa_iterations_ran);
 
-  chrono::steady_clock::time_point post_end = chrono::steady_clock::now();
+  chrono::steady_clock::time_point sa_rm_end = chrono::steady_clock::now();
+
+  weight_t sa_rm_cost = calculate_total_cost(vrp, best_routes);
+  int sa_rm_vehicles = static_cast<int>(best_routes.size());
+  cout << "SA+RM Cost: " << sa_rm_cost
+       << " Vehicles: " << sa_rm_vehicles << endl;
+
+  // --- Phase: Final Inter-Route Optimization ---
+  chrono::steady_clock::time_point final_opt_start = chrono::steady_clock::now();
+#ifdef USE_PARALLEL
+  inter_route_relocate_parallel(vrp, best_routes);
+  inter_route_swap_parallel(vrp, best_routes);
+  inter_route_2opt_star_parallel(vrp, best_routes);
+#else
+  inter_route_relocate(vrp, best_routes);
+  inter_route_swap(vrp, best_routes);
+  inter_route_2opt_star(vrp, best_routes);
+#endif
+
+  // --- Phase: Final Intra-Route Optimization ---
+  for (auto &route : best_routes) {
+    if (!route.empty() && route.front().id == DEPOT) route.erase(route.begin());
+    if (!route.empty() && route.back().id == DEPOT) route.pop_back();
+  }
+  weight_t final_opt_cost;
+#ifdef USE_PARALLEL
+  best_routes = postProcessIt_parallel(vrp, best_routes, final_opt_cost);
+#else
+  best_routes = postProcessIt(vrp, best_routes, final_opt_cost);
+#endif
+  for (auto &route : best_routes) {
+    route.insert(route.begin(), RouteNode(DEPOT));
+    route.push_back(RouteNode(DEPOT));
+    recalculate_pred_distances(vrp, route);
+  }
+
+  chrono::steady_clock::time_point final_opt_end = chrono::steady_clock::now();
   chrono::steady_clock::time_point total_end = chrono::steady_clock::now();
 
   weight_t final_cost = calculate_total_cost(vrp, best_routes);
   int final_vehicles = static_cast<int>(best_routes.size());
-  // double final_max_util, final_avg_util;
-  // compute_utilization_stats(vrp, best_routes, final_max_util, final_avg_util);
   print_routes(best_routes);
 
   auto ns_to_sec = [](chrono::nanoseconds ns) {
@@ -204,18 +208,15 @@ int main(int argc, char *argv[]) {
     cerr << "IntraRoute_Vehicles: " << intra_vehicles << " ";
     // cerr << "IntraRoute_MaxUtil: " << intra_max_util << " ";
     // cerr << "IntraRoute_AvgUtil: " << intra_avg_util << " ";
-    cerr << "RouteMin_Time: "
-         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(rm_end - rm_start))
+    cerr << "SA_RM_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(sa_rm_end - sa_rm_start))
          << " s ";
-    cerr << "RouteMin_Cost: " << rm_cost << " ";
-    cerr << "RouteMin_Vehicles: " << rm_vehicles << " ";
-    // cerr << "RouteMin_MaxUtil: " << rm_max_util << " ";
-    // cerr << "RouteMin_AvgUtil: " << rm_avg_util << " ";
-    cerr << "Routes_Eliminated: " << routes_eliminated << " ";
-    cerr << "SA_Time: "
-         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(post_end - post_start))
+    cerr << "SA_RM_Iterations: " << sa_iterations_ran << " ";
+    cerr << "SA_RM_Cost: " << sa_rm_cost << " ";
+    cerr << "SA_RM_Vehicles: " << sa_rm_vehicles << " ";
+    cerr << "FinalOpt_Time: "
+         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(final_opt_end - final_opt_start))
          << " s ";
-    cerr << "SA_Iterations: " << sa_iterations_ran << " ";
     cerr << "Final_Cost: " << final_cost << " ";
     cerr << "Final_Vehicles: " << final_vehicles << " ";
     // cerr << "Final_MaxUtil: " << final_max_util << " ";

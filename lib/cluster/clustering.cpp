@@ -139,7 +139,8 @@ vector<vector<int>> clustering_angle_sweep(const VRP &vrp, double angle_range) {
       angular_diff += 360.0;
     }
 
-    if (angular_diff > angle_range) {
+    if (angular_diff > angle_range ||
+        static_cast<int>(current_cluster.size()) >= 500) {
       clusters.push_back(current_cluster);
       current_cluster.clear();
       current_cluster.push_back(cust.id);
@@ -213,7 +214,8 @@ vector<vector<int>> clustering_angle_sweep_parallel(const VRP &vrp,
                     double diff = cust.angle - current_sector_start_angle;
                     if (diff < 0) diff += 360.0;
 
-                    if (diff > angle_range) {
+                    if (diff > angle_range ||
+                        static_cast<int>(current_cluster.size()) >= 500) {
                         local_clusters.push_back(current_cluster);
                         current_cluster = {cust.id};
                         current_sector_start_angle = cust.angle;

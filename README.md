@@ -5,21 +5,22 @@ A C++ solver for the Capacitated Vehicle Routing Problem with Time Windows (CVRP
 ## Solver Pipeline
 
 1. **Read instance** from a Solomon-format file (`lib/vrp.cpp`).
-2. **Cluster customers** using angle-sweep clustering (`lib/cluster/clustering.cpp`). The sweep partitions customers by polar angle from the depot, grouping them into capacity-feasible clusters. A parallel variant (`clustering_angle_sweep_parallel`) evaluates many random starting angles via OpenMP.
+2. **Cluster customers** using angle-sweep clustering (`lib/cluster/clustering.cpp`). The sweep partitions customers by polar angle from the depot, grouping them into clusters bounded by angular range. Clusters are also hard-capped at 500 customers to prevent O(n²) blowup in downstream C&W construction. A parallel variant (`clustering_angle_sweep_parallel`) evaluates many random starting angles via OpenMP.
 3. **Construct initial routes** within each cluster using the Clarke-Wright savings heuristic (`lib/clark/clarke_wright.cpp`), respecting both capacity and time-window constraints. Sequential and parallel variants available. Routes are bookended with DEPOT nodes after construction.
 4. **Inter-route optimization** (`lib/optim/inter_route_optimization.cpp`). Applies three between-route improvement operators in sequence: relocate (move a customer from one route to another), swap (exchange customers between routes), and 2-opt* (reconnect route tails). Sequential and OpenMP-parallel variants.
 5. **Intra-route optimization** (`lib/optim/intra_route_optimization.cpp`). Applies within-route improvement: nearest-neighbor TSP approximation followed by 2-opt. DEPOT bookends are stripped before this phase (since `postProcessIt` reorders all route elements) and re-added afterward. Sequential and OpenMP-parallel variants.
-6. **Minimize vehicle count** (`lib/optim/route_minimization.cpp`). Deterministic size-ordered 2-route ejection: each iteration sorts routes by size ascending (fewest customers first) and ejects the pair at indices `[i, i+1]` (starting from `i = 0`, incrementing by 2 each iteration, resetting to 0 when out of bounds). The iteration budget is adaptive based on route length variance: `max_route_length - avg_route_length` determines the number of attempts (≤6 → 100, 7 → 200, 8 → 300, 9 → 400, 10 → 500, >10 → 1000). The rationale is that similar-length routes have fewer easy ejection targets, while high variance signals short routes that are cheap to dissolve. Ejected customers are reinserted at the cheapest feasible position across remaining routes (parallel search). Customers with tighter time windows are inserted first. Any customers that cannot be feasibly reinserted are consolidated into new routes using the sequential Clarke-Wright savings heuristic (`clarke_wright_cvrptw`) at the end of each iteration. The best solution (fewest routes, with lowest cost as tiebreaker) seen across all iterations is kept. Utilization-based sorting was tried but produced higher overall cost — length-based sorting is a better proxy for "dissolvability" in time-windowed problems because it minimizes the number of hard-to-place customers ejected.
-7. **Post-optimize with simulated annealing** (`lib/optim/sa_optimization.cpp`). Each SA iteration applies, in order:
-   - Ruin-and-recreate: randomly remove customers and greedily reinsert at cheapest feasible positions (parallel search over routes).
-   - Best inter-route relocate move (parallel).
-   - Best inter-route swap move (parallel).
-   - Best inter-route 2-opt* move (parallel).
-   - Intra-route 2-opt on every route (parallel over routes).
+6. **Merged SA + Route Minimization** (`lib/optim/sa_optimization.cpp`). Combines vehicle-count reduction with SA-based cost improvement in a single loop (default 1,000 iterations). Each iteration:
+   1. Sort routes by capacity utilization ascending (lowest-utilized first).
+   2. **Early exit**: if `routes[0]` (least utilized) is at 100% utilization, all routes are fully packed — break.
+   3. **Bounds check**: if walking index `i+1 >= num_routes`, reset `i = 0`.
+   4. **Utilization check**: if route `i` or `i+1` is at 100% utilization, skip ejection (don't dismantle well-packed routes), run only SA operators, reset `i = 0` for next iteration.
+   5. Otherwise: eject routes `i` and `i+1`, attempt cheapest feasible reinsertion of their customers into remaining routes (parallel search, tightest time-window customers first). Leftovers consolidated via sequential Clarke-Wright (`clarke_wright_cvrptw`). Advance `i += 2`.
+   6. Apply SA operators: best inter-route relocate, swap, 2-opt*, and intra-route 2-opt (all parallel).
+   7. SA acceptance on the full iteration's cost delta (Boltzmann, geometric cooling with alpha = 0.9995, T0 = 2% of initial cost).
+   8. Track global best: **lowest cost first**, vehicle count as tiebreaker.
    
-   The combined delta is accepted or rejected via the SA criterion (Boltzmann acceptance, geometric cooling with alpha = 0.9995, T0 = 2% of initial cost). The loop runs up to `sa_iterations` (default 10,000) but stops early if:
-   - **Stagnation**: best cost improves by less than 0.1% over a 300-iteration window.
-   - **Temperature floor**: temperature drops below `1e-5 * current_cost` (SA has degenerated into greedy search).
+   The rationale for utilization-based ejection (vs. the previous size-based approach): low-utilization routes have more slack in surrounding routes to absorb their customers, whereas small routes might contain high-demand customers that are hard to redistribute. Interleaving SA operators with each ejection lets the solver immediately clean up after redistributions, rather than deferring optimization to a separate phase.
+7. **Final inter-route + intra-route optimization**. After the merged SA+RM loop, a final pass of all three inter-route operators (relocate, swap, 2-opt*) followed by full intra-route optimization (TSP-approx + 2-opt) polishes the best solution found. This recovers any cost degradation from the last ejection cycles.
 8. **Verify and report**: check capacity and time-window feasibility for all routes, print route details and per-phase timing/cost/vehicle summary.
 
 Distances are computed on-the-fly (Euclidean, `VRP::get_dist()`), not precomputed into a matrix.
@@ -55,7 +56,7 @@ make clean
 ```
 
 - `angle_range` — angular width (in degrees) of each sweep cluster.
-- `sa_iterations` — maximum SA iterations (default: 10,000). Early stopping may terminate sooner.
+- `sa_iterations` — maximum merged SA+RM iterations (default: 1,000). Early stopping triggers if all routes reach 100% utilization.
 
 Examples:
 
@@ -109,7 +110,7 @@ bash test_huge.sh --parallel --iterations 20000
 
 Results go to `outputs/result_huge.csv`.
 
-All scripts default to 10,000 SA iterations if `--iterations` is not specified.
+All scripts default to 10,000 SA iterations if `--iterations` is not specified (the solver binary itself defaults to 1,000 when no argument is given).
 
 ### SLURM (HPC cluster)
 
@@ -144,13 +145,12 @@ Routes are printed to `stdout`. A summary line is written to `stderr` with per-p
 | `IntraRoute_Time` | Intra-route optimization time (seconds) |
 | `IntraRoute_Cost` | Total distance after intra-route optimization |
 | `IntraRoute_Vehicles` | Vehicle count after intra-route optimization |
-| `RouteMin_Time` | Route minimization phase time (seconds) |
-| `RouteMin_Cost` | Total distance after route minimization |
-| `RouteMin_Vehicles` | Vehicle count after route minimization |
-| `Routes_Eliminated` | Net routes eliminated by route minimization |
-| `SA_Time` | SA optimization time (seconds) |
-| `SA_Iterations` | Actual SA iterations run (may be less than max due to early stopping) |
-| `Final_Cost` | Total distance after SA optimization |
+| `SA_RM_Time` | Merged SA+RM phase time (seconds) |
+| `SA_RM_Iterations` | Actual SA+RM iterations run (may be less than max if all routes hit 100% utilization) |
+| `SA_RM_Cost` | Total distance after merged SA+RM |
+| `SA_RM_Vehicles` | Vehicle count after merged SA+RM |
+| `FinalOpt_Time` | Final inter+intra optimization time (seconds) |
+| `Final_Cost` | Total distance of final solution |
 | `Final_Vehicles` | Number of routes in the final solution |
 | `Total_Time` | End-to-end wall time (seconds) |
 | `route_length` | Length of the longest route (node count) |
@@ -175,8 +175,8 @@ lib/
   clark/
     clarke_wright.h / clarke_wright.cpp   Clarke-Wright savings heuristic (seq + parallel)
   optim/
-    route_minimization.h / .cpp                    Vehicle count reduction via route ejection
-    sa_optimization.h / sa_optimization.cpp       SA post-optimization loop
+    route_minimization.h / .cpp                    Vehicle count reduction (standalone, currently unused — logic merged into SA)
+    sa_optimization.h / sa_optimization.cpp       Merged SA + route minimization loop
     intra_route_optimization.h / .cpp             Within-route: nearest-neighbor, 2-opt
     inter_route_optimization.h / .cpp             Between-route: relocate, swap, 2-opt*
 
