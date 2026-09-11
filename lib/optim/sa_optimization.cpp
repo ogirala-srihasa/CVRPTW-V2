@@ -536,7 +536,6 @@ vector<vector<RouteNode>> sa_post_optimization(
 
   auto best_routes = routes;
   double best_cost = current_cost;
-  double best_cost_at_window_start = best_cost;
   int best_vehicles = static_cast<int>(routes.size());
 
   random_device rd;
@@ -545,10 +544,6 @@ vector<vector<RouteNode>> sa_post_optimization(
   int eject_idx = 0;
   int actual_iterations = max_iterations;
   bool early_stopped = false;
-
-  const int    STAGNATION_WINDOW  = 300;
-  const double STAGNATION_EPSILON = 0.001;
-  const double TEMP_FLOOR_FACTOR  = 1e-5;
 
   cout << "  Initial cost: " << current_cost
        << "  T0: " << T0
@@ -711,30 +706,6 @@ vector<vector<RouteNode>> sa_post_optimization(
     }
 
     temperature *= alpha;
-
-    // Early stopping: temperature floor
-    if (temperature < TEMP_FLOOR_FACTOR * current_cost) {
-      cout << "  SA+RM early stop (temperature floor) at iteration "
-           << (iter + 1) << ": T=" << temperature << endl;
-      actual_iterations = iter + 1;
-      early_stopped = true;
-      break;
-    }
-
-    // Early stopping: stagnation check every STAGNATION_WINDOW iterations
-    if ((iter + 1) % STAGNATION_WINDOW == 0) {
-      double relative_improvement =
-          (best_cost_at_window_start - best_cost) / best_cost_at_window_start;
-      if (relative_improvement < STAGNATION_EPSILON) {
-        cout << "  SA+RM early stop (stagnation) at iteration " << (iter + 1)
-             << ": relative improvement " << relative_improvement
-             << " over last " << STAGNATION_WINDOW << " iterations" << endl;
-        actual_iterations = iter + 1;
-        early_stopped = true;
-        break;
-      }
-      best_cost_at_window_start = best_cost;
-    }
 
     // Advance eject index
     if (did_eject) {

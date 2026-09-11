@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
   (void)n_clusters;
 
   double angle_range = stod(argv[2]);
-  int sa_rm_iterations = (argc >= 4) ? stoi(argv[3]) : 10000;
+  int sa_rm_iterations = (argc >= 4) ? stoi(argv[3]) : 1000;
   int sa_only_iters = (argc >= 5) ? stoi(argv[4]) : 10000;
 
   // vector<vector<node_t>> clusters =

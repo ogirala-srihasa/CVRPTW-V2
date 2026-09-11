@@ -49,7 +49,7 @@ for infile in testcase/*; do
         temp_outfile="outputs/${filename}_${angle}.tmp"
         temp_errfile="outputs/${filename}_${angle}.err"
 
-        ./solve_cvrptw "$infile" "$angle" 10000 "$sa_iterations" > "$temp_outfile" 2> "$temp_errfile"
+        ./solve_cvrptw "$infile" "$angle" 1000 "$sa_iterations" > "$temp_outfile" 2> "$temp_errfile"
 
         final_cost=$(grep -oP "Final_Cost:\s+\K[0-9.]+" "$temp_errfile")
         total_time=$(grep -oP "Total_Time:\s+\K[0-9.]+" "$temp_errfile")
