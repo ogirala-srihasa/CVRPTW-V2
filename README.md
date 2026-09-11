@@ -111,6 +111,23 @@ bash test_huge.sh --parallel --iterations 20000
 
 Results go to `outputs/result_huge.csv`.
 
+### `test_i_instances.sh` — Italian province CVRPTW instances (20K–1M customers)
+
+Runs the solver on all `.txt` files in `I_testcases/` (generated from CVRPLIB `.vrp` files via `generatefromvrp.py`). Fixed angle of 30.
+
+```bash
+# Sequential
+bash test_i_instances.sh
+
+# Parallel
+bash test_i_instances.sh --parallel
+
+# Custom SA-only iterations (SA+RM is always 1000)
+bash test_i_instances.sh --parallel --iterations 20000
+```
+
+Results go to `outputs/result_i_instances.csv`.
+
 All scripts hardcode SA+RM at 1,000 iterations and default to 10,000 SA-only iterations if `--iterations` is not specified. The solver binary itself defaults to 1,000 SA+RM and 10,000 SA-only when no arguments are given.
 
 ### SLURM (HPC cluster)
@@ -127,7 +144,13 @@ sbatch submit_job.sh
 sbatch submit_job_huge.sh
 ```
 
-Both use 1 node, 48 cores, partition `small`, `OMP_NUM_THREADS=48`.
+`submit_job_i_instances.sh` — Italian province instances (20K–1M customers), 24-hour wall time:
+
+```bash
+sbatch submit_job_i_instances.sh
+```
+
+All SLURM jobs use 1 node, 48 cores, partition `small`, `OMP_NUM_THREADS=48`.
 
 ## Output
 
@@ -167,9 +190,12 @@ solve_cvrptw.cpp          Main driver
 Makefile                  Build rules (sequential / parallel)
 submit_job.sh             SLURM job script (48 cores, 4h, 1000-customer benchmarks)
 submit_job_huge.sh        SLURM job script (48 cores, 12h, 10,000-customer XMLTW)
+submit_job_i_instances.sh SLURM job script (48 cores, 24h, Italian province instances)
 test.sh                   Batch runner with angle sweep (testcase/)
 test_huge.sh              Batch runner for XMLTW10000_*.txt files
+test_i_instances.sh       Batch runner for I_testcases/*.txt (angle 30)
 run.sh                    Quick sequential batch runner
+generatefromvrp.py        Converts CVRPLIB .vrp files to Solomon VRPTW format
 
 lib/
   vrp.h / vrp.cpp                     VRP data structures, instance parser, distance
@@ -186,6 +212,7 @@ lib/
 
 XMLTW10000_*.txt          Gehring & Homberger 10,000-customer instances (6 files)
 testcase/                 Gehring & Homberger benchmark instances (1000 customers)
+I_testcases/              Italian province CVRPTW instances (20K–1M customers, generated from .vrp)
 outputs/                  Generated results from batch runs
 ```
 
