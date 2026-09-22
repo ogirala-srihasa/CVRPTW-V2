@@ -18,9 +18,11 @@ void tsp_2opt(const VRP &vrp,
 std::vector<std::vector<RouteNode>> postprocess_2OPT(
     const VRP &vrp, std::vector<std::vector<RouteNode>> &final_routes);
 std::vector<std::vector<RouteNode>> postProcessIt(
-    const VRP &vrp, std::vector<std::vector<RouteNode>> &final_routes, weight_t &minCost);
+    const VRP &vrp, std::vector<std::vector<RouteNode>> &final_routes, weight_t &minCost,
+    bool verbose = true);
 std::vector<std::vector<RouteNode>> postProcessIt_parallel(
-    const VRP &vrp, std::vector<std::vector<RouteNode>> &final_routes, weight_t &minCost);
+    const VRP &vrp, std::vector<std::vector<RouteNode>> &final_routes, weight_t &minCost,
+    bool verbose = true);
 
 std::vector<std::vector<RouteNode>> postprocess_tsp_approx_parallel(
     const VRP &vrp, std::vector<std::vector<RouteNode>> &solRoutes);

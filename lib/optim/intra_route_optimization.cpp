@@ -245,28 +245,35 @@ vector<vector<RouteNode>> postprocess_2OPT_parallel(
 
 
 vector<vector<RouteNode>> postProcessIt_parallel(
-    const VRP &vrp, vector<vector<RouteNode>> &final_routes, weight_t &minCost) {
+    const VRP &vrp, vector<vector<RouteNode>> &final_routes, weight_t &minCost,
+    bool verbose) {
   vector<vector<RouteNode>> postprocessed_final_routes;
 
   auto postprocessed_final_routes1 = postprocess_tsp_approx_parallel(vrp, final_routes);
-  if (verify_route_t(vrp, postprocessed_final_routes1)) {
-    cout << "\nPostprocess 1 route valid" << endl;
-  } else {
-    cout << "\nPostprocess 1 route invalid" << endl;
+  if (verbose) {
+    if (verify_route_t(vrp, postprocessed_final_routes1)) {
+      cout << "\nPostprocess 1 route valid" << endl;
+    } else {
+      cout << "\nPostprocess 1 route invalid" << endl;
+    }
   }
 
   auto postprocessed_final_routes2 = postprocess_2OPT_parallel(vrp, postprocessed_final_routes1);
-  if (verify_route_t(vrp, postprocessed_final_routes2)) {
-    cout << "Postprocess 2 route valid" << endl;
-  } else {
-    cout << "Postprocess 2 route invalid" << endl;
+  if (verbose) {
+    if (verify_route_t(vrp, postprocessed_final_routes2)) {
+      cout << "Postprocess 2 route valid" << endl;
+    } else {
+      cout << "Postprocess 2 route invalid" << endl;
+    }
   }
 
   auto postprocessed_final_routes3 = postprocess_2OPT_parallel(vrp, final_routes);
-  if (verify_route_t(vrp, postprocessed_final_routes3)) {
-    cout << "Postprocess 3 route valid" << endl;
-  } else {
-    cout << "Postprocess 3 route invalid" << endl;
+  if (verbose) {
+    if (verify_route_t(vrp, postprocessed_final_routes3)) {
+      cout << "Postprocess 3 route valid" << endl;
+    } else {
+      cout << "Postprocess 3 route invalid" << endl;
+    }
   }
 
   weight_t postprocessed_final_routes_cost = 0;
@@ -307,28 +314,35 @@ vector<vector<RouteNode>> postProcessIt_parallel(
 }
 
 vector<vector<RouteNode>> postProcessIt(
-    const VRP &vrp, vector<vector<RouteNode>> &final_routes, weight_t &minCost) {
+    const VRP &vrp, vector<vector<RouteNode>> &final_routes, weight_t &minCost,
+    bool verbose) {
   vector<vector<RouteNode>> postprocessed_final_routes;
 
   auto postprocessed_final_routes1 = postprocess_tsp_approx(vrp, final_routes);
-  if (verify_route_t(vrp, postprocessed_final_routes1)) {
-    cout << "\nPostprocess 1 route valid" << endl;
-  } else {
-    cout << "\nPostprocess 1 route invalid" << endl;
+  if (verbose) {
+    if (verify_route_t(vrp, postprocessed_final_routes1)) {
+      cout << "\nPostprocess 1 route valid" << endl;
+    } else {
+      cout << "\nPostprocess 1 route invalid" << endl;
+    }
   }
 
   auto postprocessed_final_routes2 = postprocess_2OPT(vrp, postprocessed_final_routes1);
-  if (verify_route_t(vrp, postprocessed_final_routes2)) {
-    cout << "Postprocess 2 route valid" << endl;
-  } else {
-    cout << "Postprocess 2 route invalid" << endl;
+  if (verbose) {
+    if (verify_route_t(vrp, postprocessed_final_routes2)) {
+      cout << "Postprocess 2 route valid" << endl;
+    } else {
+      cout << "Postprocess 2 route invalid" << endl;
+    }
   }
 
   auto postprocessed_final_routes3 = postprocess_2OPT(vrp, final_routes);
-  if (verify_route_t(vrp, postprocessed_final_routes3)) {
-    cout << "Postprocess 3 route valid" << endl;
-  } else {
-    cout << "Postprocess 3 route invalid" << endl;
+  if (verbose) {
+    if (verify_route_t(vrp, postprocessed_final_routes3)) {
+      cout << "Postprocess 3 route valid" << endl;
+    } else {
+      cout << "Postprocess 3 route invalid" << endl;
+    }
   }
 
   weight_t postprocessed_final_routes_cost = 0;

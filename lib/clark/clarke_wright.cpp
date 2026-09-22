@@ -914,3 +914,394 @@ clarke_wright_cvrptw_parallel_v3(const VRP &vrp,
 
   return final_routes;
 }
+
+// ---------------------------------------------------------------------------
+// Clarke-Wright merge seeded from EXISTING routes.
+//
+// Same savings machinery as clarke_wright_cvrptw -- same alpha/beta objective,
+// the same four merge orientations, and the same per-candidate time-window
+// re-verification. The only difference is that the initial units are the
+// supplied routes instead of one route per customer, so the ordering already
+// computed inside each route is preserved and only whole-route concatenations
+// are considered.
+//
+// Input routes may carry DEPOT bookends; they are stripped on entry and
+// re-added (with pred distances recalculated) on return.
+// ---------------------------------------------------------------------------
+
+// Strip DEPOT bookends into bare customer sequences, dropping empty routes.
+// Also fills the per-unit demand used by the capacity check in the merge loop.
+static void strip_route_bookends(const VRP &vrp,
+                                 const vector<vector<RouteNode>> &routes,
+                                 vector<vector<RouteNode>> &units,
+                                 vector<double> &unit_demand) {
+  units.reserve(routes.size());
+  unit_demand.reserve(routes.size());
+
+  for (const auto &route : routes) {
+    vector<RouteNode> unit;
+    unit.reserve(route.size());
+    for (auto rn : route) {
+      if (rn.id != DEPOT) {
+        unit.push_back(rn);
+      }
+    }
+    if (unit.empty()) {
+      continue;
+    }
+    unit_demand.push_back(vrp.get_route_load(unit));
+    units.push_back(std::move(unit));
+  }
+}
+
+// Re-add DEPOT bookends and refresh the cached dist_from_prev values, which
+// calculate_route_distance sums directly.
+static vector<vector<RouteNode>> restore_route_bookends(
+    const VRP &vrp, vector<vector<RouteNode>> &units) {
+  vector<vector<RouteNode>> final_routes;
+  final_routes.reserve(units.size());
+
+  for (auto &unit : units) {
+    if (unit.empty()) {
+      continue;
+    }
+    vector<RouteNode> route;
+    route.reserve(unit.size() + 2);
+    route.push_back(RouteNode(DEPOT));
+    route.insert(route.end(), unit.begin(), unit.end());
+    route.push_back(RouteNode(DEPOT));
+    recalculate_pred_distances(vrp, route);
+    final_routes.push_back(std::move(route));
+  }
+
+  return final_routes;
+}
+
+vector<vector<RouteNode>>
+clarke_wright_merge_routes(const VRP &vrp, vector<vector<RouteNode>> routes) {
+  double alpha = 0.7;
+  double beta = 0.3;
+
+  auto compute_arrival_time = [&](const vector<RouteNode> &route) {
+    double time = 0.0;
+    node_t prev = 0;
+
+    for (auto node : route) {
+      time += vrp.get_dist(prev, node);
+      if (time < vrp.node[node].earlyTime) {
+        time = vrp.node[node].earlyTime;
+      }
+      if (time > vrp.node[node].latestTime) {
+        return -1.0;
+      }
+      time += vrp.node[node].serviceTime;
+      prev = node;
+    }
+
+    return time;
+  };
+
+  auto verify_route = [&](const vector<RouteNode> &route) {
+    return compute_arrival_time(route) >= 0;
+  };
+
+  vector<vector<RouteNode>> units;
+  vector<double> unit_demand;
+  strip_route_bookends(vrp, routes, units, unit_demand);
+
+  while (true) {
+    double best_saving = -1e18;
+    int best_i = -1;
+    int best_j = -1;
+    vector<RouteNode> best_merge;
+
+    for (size_t r_i = 0; r_i < units.size(); r_i++) {
+      if (units[r_i].empty()) {
+        continue;
+      }
+
+      for (size_t r_j = r_i + 1; r_j < units.size(); r_j++) {
+        if (units[r_j].empty()) {
+          continue;
+        }
+
+        if (unit_demand[r_i] + unit_demand[r_j] > vrp.getCapacity()) {
+          continue;
+        }
+
+        auto &Ri = units[r_i];
+        auto &Rj = units[r_j];
+
+        node_t i1 = Ri.front();
+        node_t i2 = Ri.back();
+        node_t j1 = Rj.front();
+        node_t j2 = Rj.back();
+
+        double arrival_i_end = compute_arrival_time(Ri);
+        double arrival_j_end = compute_arrival_time(Rj);
+        if (arrival_i_end < 0 || arrival_j_end < 0) {
+          continue;
+        }
+
+        struct Candidate {
+          node_t from;
+          node_t to;
+          vector<RouteNode> merged;
+        };
+
+        vector<Candidate> candidates;
+
+        // Option 1: Ri -> Rj
+        {
+          vector<RouteNode> merged = Ri;
+          merged.insert(merged.end(), Rj.begin(), Rj.end());
+          candidates.push_back({i2, j1, merged});
+        }
+
+        // Option 2: Rj -> Ri
+        {
+          vector<RouteNode> merged = Rj;
+          merged.insert(merged.end(), Ri.begin(), Ri.end());
+          candidates.push_back({j2, i1, merged});
+        }
+
+        // Option 3: reversed(Ri) -> Rj
+        {
+          vector<RouteNode> Ri_rev = Ri;
+          reverse(Ri_rev.begin(), Ri_rev.end());
+          vector<RouteNode> merged = Ri_rev;
+          merged.insert(merged.end(), Rj.begin(), Rj.end());
+          candidates.push_back({i1, j1, merged});
+        }
+
+        // Option 4: Ri -> reversed(Rj)
+        {
+          vector<RouteNode> Rj_rev = Rj;
+          reverse(Rj_rev.begin(), Rj_rev.end());
+          vector<RouteNode> merged = Ri;
+          merged.insert(merged.end(), Rj_rev.begin(), Rj_rev.end());
+          candidates.push_back({i2, j2, merged});
+        }
+
+        for (auto &cand : candidates) {
+          node_t from = cand.from;
+          node_t to = cand.to;
+
+          double arrival_from =
+              compute_arrival_time((from == i2 || from == i1) ? Ri : Rj);
+          if (arrival_from < 0) {
+            continue;
+          }
+
+          double dist_saving = vrp.get_dist(0, from) + vrp.get_dist(0, to) -
+                               vrp.get_dist(from, to);
+
+          double arrival_to = arrival_from + vrp.get_dist(from, to);
+          double waiting = 0.0;
+          if (arrival_to < vrp.node[to].earlyTime) {
+            waiting = vrp.node[to].earlyTime - arrival_to;
+          }
+
+          double total_saving = alpha * dist_saving - beta * waiting;
+          if (!verify_route(cand.merged)) {
+            continue;
+          }
+
+          if (total_saving > best_saving) {
+            best_saving = total_saving;
+            best_i = static_cast<int>(r_i);
+            best_j = static_cast<int>(r_j);
+            best_merge = cand.merged;
+          }
+        }
+      }
+    }
+
+    if (best_saving <= 0) {
+      break;
+    }
+
+    units[best_i] = best_merge;
+    unit_demand[best_i] += unit_demand[best_j];
+    units[best_j].clear();
+    unit_demand[best_j] = 0;
+  }
+
+  return restore_route_bookends(vrp, units);
+}
+
+// Parallel counterpart: the route-pair scan is split across threads, each
+// keeping its own best candidate, reduced through a critical section. Mirrors
+// clarke_wright_cvrptw_parallel exactly.
+//
+// Shared (read-only during the scan): units, unit_demand, vrp.
+// Private per thread: local_best_* (declared inside the parallel region).
+vector<vector<RouteNode>>
+clarke_wright_merge_routes_parallel(const VRP &vrp,
+                                    vector<vector<RouteNode>> routes) {
+  double alpha = 0.7;
+  double beta = 0.3;
+
+  auto compute_arrival_time = [&](const vector<RouteNode> &route) {
+    double time = 0.0;
+    node_t prev = 0;
+
+    for (auto node : route) {
+      time += vrp.get_dist(prev, node);
+      if (time < vrp.node[node].earlyTime) {
+        time = vrp.node[node].earlyTime;
+      }
+      if (time > vrp.node[node].latestTime) {
+        return -1.0;
+      }
+      time += vrp.node[node].serviceTime;
+      prev = node;
+    }
+
+    return time;
+  };
+
+  auto verify_route = [&](const vector<RouteNode> &route) {
+    return compute_arrival_time(route) >= 0;
+  };
+
+  vector<vector<RouteNode>> units;
+  vector<double> unit_demand;
+  strip_route_bookends(vrp, routes, units, unit_demand);
+
+  while (true) {
+    double global_best_saving = -1e18;
+    int global_best_i = -1;
+    int global_best_j = -1;
+    vector<RouteNode> global_best_merge;
+
+#pragma omp parallel
+    {
+      double local_best_saving = -1e18;
+      int local_best_i = -1;
+      int local_best_j = -1;
+      vector<RouteNode> local_best_merge;
+
+#pragma omp for schedule(dynamic) nowait
+      for (int r_i = 0; r_i < static_cast<int>(units.size()); r_i++) {
+        if (units[r_i].empty())
+          continue;
+
+        for (int r_j = r_i + 1; r_j < static_cast<int>(units.size()); r_j++) {
+          if (units[r_j].empty())
+            continue;
+
+          if (unit_demand[r_i] + unit_demand[r_j] > vrp.getCapacity()) {
+            continue;
+          }
+
+          auto &Ri = units[r_i];
+          auto &Rj = units[r_j];
+
+          node_t i1 = Ri.front();
+          node_t i2 = Ri.back();
+          node_t j1 = Rj.front();
+          node_t j2 = Rj.back();
+
+          double arrival_i_end = compute_arrival_time(Ri);
+          double arrival_j_end = compute_arrival_time(Rj);
+          if (arrival_i_end < 0 || arrival_j_end < 0)
+            continue;
+
+          struct Candidate {
+            node_t from, to;
+            vector<RouteNode> merged;
+          };
+
+          vector<Candidate> candidates;
+
+          // Option 1: Ri -> Rj
+          {
+            vector<RouteNode> merged = Ri;
+            merged.insert(merged.end(), Rj.begin(), Rj.end());
+            candidates.push_back({i2, j1, merged});
+          }
+
+          // Option 2: Rj -> Ri
+          {
+            vector<RouteNode> merged = Rj;
+            merged.insert(merged.end(), Ri.begin(), Ri.end());
+            candidates.push_back({j2, i1, merged});
+          }
+
+          // Option 3: reversed(Ri) -> Rj
+          {
+            vector<RouteNode> Ri_rev = Ri;
+            reverse(Ri_rev.begin(), Ri_rev.end());
+            vector<RouteNode> merged = Ri_rev;
+            merged.insert(merged.end(), Rj.begin(), Rj.end());
+            candidates.push_back({i1, j1, merged});
+          }
+
+          // Option 4: Ri -> reversed(Rj)
+          {
+            vector<RouteNode> Rj_rev = Rj;
+            reverse(Rj_rev.begin(), Rj_rev.end());
+            vector<RouteNode> merged = Ri;
+            merged.insert(merged.end(), Rj_rev.begin(), Rj_rev.end());
+            candidates.push_back({i2, j2, merged});
+          }
+
+          for (auto &cand : candidates) {
+            node_t from = cand.from;
+            node_t to = cand.to;
+
+            double arrival_from =
+                compute_arrival_time((from == i2 || from == i1) ? Ri : Rj);
+            if (arrival_from < 0)
+              continue;
+
+            double dist_saving = vrp.get_dist(0, from) + vrp.get_dist(0, to) -
+                                 vrp.get_dist(from, to);
+            double arrival_to = arrival_from + vrp.get_dist(from, to);
+            double waiting = 0.0;
+
+            if (arrival_to < vrp.node[to].earlyTime) {
+              waiting = vrp.node[to].earlyTime - arrival_to;
+            }
+
+            double total_saving = alpha * dist_saving - beta * waiting;
+
+            if (!verify_route(cand.merged))
+              continue;
+
+            if (total_saving > local_best_saving) {
+              local_best_saving = total_saving;
+              local_best_i = r_i;
+              local_best_j = r_j;
+              local_best_merge = cand.merged;
+            }
+          }
+        }
+      }
+
+// --- GLOBAL SYNCHRONIZATION ---
+#pragma omp critical
+      {
+        if (local_best_saving > global_best_saving) {
+          global_best_saving = local_best_saving;
+          global_best_i = local_best_i;
+          global_best_j = local_best_j;
+          global_best_merge = std::move(local_best_merge);
+        }
+      }
+    }
+    // --- OPENMP PARALLEL REGION ENDS ---
+
+    if (global_best_saving <= 0) {
+      break;
+    }
+
+    units[global_best_i] = std::move(global_best_merge);
+    unit_demand[global_best_i] += unit_demand[global_best_j];
+    units[global_best_j].clear();
+    unit_demand[global_best_j] = 0;
+  }
+
+  return restore_route_bookends(vrp, units);
+}

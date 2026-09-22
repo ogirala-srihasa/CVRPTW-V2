@@ -24,4 +24,12 @@ clarke_wright_cvrptw_distance(const VRP &vrp,
 std::vector<std::vector<RouteNode>>
 clarke_wright_cvrptw_parallel_v3(const VRP &vrp,
                                  const std::vector<std::vector<int>> &clusters);
+
+std::vector<std::vector<RouteNode>>
+clarke_wright_merge_routes(const VRP &vrp,
+                           std::vector<std::vector<RouteNode>> routes);
+
+std::vector<std::vector<RouteNode>>
+clarke_wright_merge_routes_parallel(const VRP &vrp,
+                                    std::vector<std::vector<RouteNode>> routes);
 #endif

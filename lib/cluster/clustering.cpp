@@ -265,6 +265,61 @@ vector<vector<int>> clustering_angle_sweep_parallel(const VRP &vrp,
     return trials[best_idx];
 }
 
+vector<vector<int>> clustering_polar_fixed_size(const VRP &vrp,
+                                                  int cluster_size) {
+  cout << "--- Running Fixed-Size Polar Clustering with cluster size: "
+       << cluster_size << " ---" << endl;
+  int n = vrp.getSize();
+  vector<vector<int>> clusters;
+  if (n <= 1) {
+    return clusters;
+  }
+  if (cluster_size <= 0) {
+    cluster_size = 1000;
+  }
+
+  double depot_x = vrp.node[0].x;
+  double depot_y = vrp.node[0].y;
+
+  vector<PolarCustomer> sweep_list;
+  sweep_list.reserve(n - 1);
+
+  for (int i = 1; i < n; i++) {
+    double dx = vrp.node[i].x - depot_x;
+    double dy = vrp.node[i].y - depot_y;
+    double angle_deg = atan2(dy, dx) * (180.0 / M_PI);
+    if (angle_deg < 0) {
+      angle_deg += 360.0;
+    }
+    sweep_list.push_back({i, angle_deg, vrp.node[i].demand});
+  }
+
+  sort(sweep_list.begin(), sweep_list.end(),
+       [](const PolarCustomer &a, const PolarCustomer &b) {
+         return a.angle < b.angle;
+       });
+
+  // Chunk the angle-sorted customers into fixed-size groups. Unlike the
+  // angle-sweep variants there is no random start index: deterministic
+  // clusters keep phase-to-phase comparisons reproducible across runs.
+  int num_customers = static_cast<int>(sweep_list.size());
+  for (int start = 0; start < num_customers; start += cluster_size) {
+    int end = min(start + cluster_size, num_customers);
+
+    vector<int> current_cluster;
+    current_cluster.reserve(end - start);
+    for (int k = start; k < end; k++) {
+      current_cluster.push_back(sweep_list[k].id);
+    }
+    clusters.push_back(std::move(current_cluster));
+  }
+
+  cout << "    " << clusters.size() << " clusters created (last cluster holds "
+       << clusters.back().size() << " customers)" << endl;
+
+  return clusters;
+}
+
 // Other Clustering Algorithm
 
 vector<vector<int>> clustering_hierarchical(const VRP &vrp, int k) {

@@ -1,218 +1,143 @@
 #include <chrono>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <vector>
 
-#include "lib/clark/clarke_wright.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #include "lib/cluster/clustering.h"
-#include "lib/optim/inter_route_optimization.h"
-#include "lib/optim/intra_route_optimization.h"
+#include "lib/optim/pipeline.h"
 #include "lib/optim/sa_optimization.h"
 #include "lib/route_utils.h"
 #include "lib/vrp.h"
 
 using namespace std;
 
+// Above this many routes a global Clarke-Wright merge (~R^3 pair evaluations,
+// each building four candidate routes and re-verifying time windows) stops
+// being affordable, and the merge phase falls back to merging neighbouring
+// angular clusters only.
+static const int GLOBAL_MERGE_ROUTE_LIMIT = 2000;
+
 int main(int argc, char *argv[]) {
   VRP vrp;
   if (argc < 3) {
-    cout << "seqCVRPTW version 3" << '\n';
+    cout << "seqCVRPTW version 4" << '\n';
     cout << "Usage: " << argv[0]
-         << " toy.vrp angle_range [sa_rm_iterations] [sa_only_iterations]" << '\n';
+         << " toy.vrp cluster_size [sa_rm_iterations] [sa_only_iterations]"
+         << " [post_opt_iterations]" << '\n';
     exit(1);
   }
 
   vrp.read(argv[1]);
 
-  chrono::steady_clock::time_point total_start = chrono::steady_clock::now();
-  chrono::steady_clock::time_point pre_start = chrono::steady_clock::now();
+  int cluster_size = stoi(argv[2]);
+  int sa_rm_iterations = (argc >= 4) ? stoi(argv[3]) : 10000;
+  int sa_only_iterations = (argc >= 5) ? stoi(argv[4]) : 10000;
+  int post_opt_iterations = (argc >= 6) ? stoi(argv[5]) : 1000;
 
-  int n_clusters;
-  int sum_demand = 0;
-  for (size_t i = 1; i < vrp.getSize(); i++) {
-    sum_demand += vrp.node[i].demand;
-  }
-  n_clusters = sum_demand / vrp.getCapacity();
-  (void)n_clusters;
-
-  double angle_range = stod(argv[2]);
-  int sa_rm_iterations = (argc >= 4) ? stoi(argv[3]) : 1000;
-  int sa_only_iters = (argc >= 5) ? stoi(argv[4]) : 10000;
-
-  // vector<vector<node_t>> clusters =
-  //     clustering_angle_sweep_parallel(vrp, angle_range, 1000);
-  vector<vector<node_t>> clusters = clustering_angle_sweep(vrp, angle_range);
-  // vector<vector<node_t>> clusters = clustering_hierarchical(vrp, n_clusters);
-  // vector<vector<node_t>> clusters = clustering_kmedoid(vrp, n_clusters);
-  // vector<vector<node_t>> clusters = clustering_kmeans_plus_plus(vrp,
-  // n_clusters); vector<vector<node_t>> clusters = clustering_k_far(vrp,
-  // n_clusters);
-
-  for (int i = 0; i < static_cast<int>(clusters.size()); i++) {
-    cout << "Cluster " << i << ": ";
-    for (auto node : clusters[i]) {
-      cout << node << " ";
-    }
-    cout << endl;
-  }
-
-  chrono::steady_clock::time_point pre_end = chrono::steady_clock::now();
-  chrono::steady_clock::time_point mid_start = chrono::steady_clock::now();
-
-#ifdef USE_PARALLEL
-  auto routes = clarke_wright_cvrptw_parallel(vrp, clusters);
-#else
-  auto routes = clarke_wright_cvrptw(vrp, clusters);
+#ifdef _OPENMP
+  // The construction phase nests the SA loops' own parallel regions inside a
+  // parallel for over clusters. Pinning one active level keeps those inner
+  // regions single-threaded instead of oversubscribing threads x threads.
+  omp_set_max_active_levels(1);
 #endif
 
-  // Below approach is giving more average distance compared to other clark &
-  // wright..... auto routes = clarke_wright_cvrptw_distance(vrp, clusters);
+  chrono::steady_clock::time_point total_start = chrono::steady_clock::now();
 
-  chrono::steady_clock::time_point mid_end = chrono::steady_clock::now();
+  auto clusters = clustering_polar_fixed_size(vrp, cluster_size);
 
-  for (auto &route : routes) {
-    route.insert(route.begin(), RouteNode(DEPOT));
-    route.push_back(RouteNode(DEPOT));
-    recalculate_pred_distances(vrp, route);
+  // Customer -> cluster index. The merge phase uses this to keep each merged
+  // route associated with an angular slice.
+  vector<int> cluster_of(vrp.getSize(), -1);
+  for (int c = 0; c < static_cast<int>(clusters.size()); c++) {
+    for (node_t cust : clusters[c]) {
+      cluster_of[cust] = c;
+    }
   }
 
-  weight_t construction_cost = calculate_total_cost(vrp, routes);
-  int construction_vehicles = static_cast<int>(routes.size());
-  // double construction_max_util, construction_avg_util;
-  // compute_utilization_stats(vrp, routes, construction_max_util, construction_avg_util);
+  // --- Phase 1: per-cluster construction and optimization ---
+  chrono::steady_clock::time_point construction_start =
+      chrono::steady_clock::now();
+  auto grouped_routes =
+      construction_phase(vrp, clusters, sa_rm_iterations, sa_only_iterations);
+  chrono::steady_clock::time_point construction_end =
+      chrono::steady_clock::now();
+
+  weight_t construction_cost = 0.0;
+  int construction_vehicles = 0;
+  for (const auto &group : grouped_routes) {
+    construction_cost += calculate_total_cost(vrp, group);
+    construction_vehicles += static_cast<int>(group.size());
+  }
   cout << "Construction Cost: " << construction_cost
        << " Vehicles: " << construction_vehicles << endl;
 
-  // --- Phase: Inter-route optimization ---
-  chrono::steady_clock::time_point inter_start = chrono::steady_clock::now();
-#ifdef USE_PARALLEL
-  inter_route_relocate_parallel(vrp, routes);
-  inter_route_swap_parallel(vrp, routes);
-  inter_route_2opt_star_parallel(vrp, routes);
-#else
-  inter_route_relocate(vrp, routes);
-  inter_route_swap(vrp, routes);
-  inter_route_2opt_star(vrp, routes);
-#endif
-  chrono::steady_clock::time_point inter_end = chrono::steady_clock::now();
+  // --- Phase 2: Clarke-Wright merge across cluster boundaries ---
+  chrono::steady_clock::time_point merge_start = chrono::steady_clock::now();
+  auto routes = merge_phase(vrp, std::move(grouped_routes), cluster_of,
+                            GLOBAL_MERGE_ROUTE_LIMIT);
+  chrono::steady_clock::time_point merge_end = chrono::steady_clock::now();
 
-  weight_t inter_cost = calculate_total_cost(vrp, routes);
-  int inter_vehicles = static_cast<int>(routes.size());
-  // double inter_max_util, inter_avg_util;
-  // compute_utilization_stats(vrp, routes, inter_max_util, inter_avg_util);
-  cout << "Inter-Route Opt Cost: " << inter_cost
-       << " Vehicles: " << inter_vehicles << endl;
+  weight_t merge_cost = calculate_total_cost(vrp, routes);
+  int merge_vehicles = static_cast<int>(routes.size());
+  cout << "Merge Cost: " << merge_cost << " Vehicles: " << merge_vehicles
+       << endl;
 
-  // --- Phase: Intra-route optimization ---
-  // postProcessIt expects routes WITHOUT DEPOT bookends, so strip then re-add
-  chrono::steady_clock::time_point intra_start = chrono::steady_clock::now();
-  for (auto &route : routes) {
-    if (!route.empty() && route.front().id == DEPOT) route.erase(route.begin());
-    if (!route.empty() && route.back().id == DEPOT) route.pop_back();
-  }
-  weight_t intra_cost;
-#ifdef USE_PARALLEL
-  routes = postProcessIt_parallel(vrp, routes, intra_cost);
-#else
-  routes = postProcessIt(vrp, routes, intra_cost);
-#endif
-  for (auto &route : routes) {
-    route.insert(route.begin(), RouteNode(DEPOT));
-    route.push_back(RouteNode(DEPOT));
-    recalculate_pred_distances(vrp, route);
-  }
-  chrono::steady_clock::time_point intra_end = chrono::steady_clock::now();
+  // --- Phase 3: global eject / reinsert under SA acceptance ---
+  chrono::steady_clock::time_point post_opt_start = chrono::steady_clock::now();
+  int post_opt_iterations_ran = 0;
+  routes = post_merge_optimization(vrp, routes, post_opt_iterations,
+                                   &post_opt_iterations_ran);
+  chrono::steady_clock::time_point post_opt_end = chrono::steady_clock::now();
 
-  intra_cost = calculate_total_cost(vrp, routes);
-  int intra_vehicles = static_cast<int>(routes.size());
-  // double intra_max_util, intra_avg_util;
-  // compute_utilization_stats(vrp, routes, intra_max_util, intra_avg_util);
-  cout << "Intra-Route Opt Cost: " << intra_cost
-       << " Vehicles: " << intra_vehicles << endl;
+  weight_t post_opt_cost = calculate_total_cost(vrp, routes);
+  int post_opt_vehicles = static_cast<int>(routes.size());
+  cout << "Post-Opt Cost: " << post_opt_cost
+       << " Vehicles: " << post_opt_vehicles << endl;
 
-  // --- Phase: Merged SA + Route Minimization ---
-  chrono::steady_clock::time_point sa_rm_start = chrono::steady_clock::now();
-
-  int sa_rm_iterations_ran = 0;
-  auto best_routes = sa_post_optimization(vrp, routes, sa_rm_iterations, &sa_rm_iterations_ran);
-
-  chrono::steady_clock::time_point sa_rm_end = chrono::steady_clock::now();
-
-  weight_t sa_rm_cost = calculate_total_cost(vrp, best_routes);
-  int sa_rm_vehicles = static_cast<int>(best_routes.size());
-  cout << "SA+RM Cost: " << sa_rm_cost
-       << " Vehicles: " << sa_rm_vehicles << endl;
-
-  // --- Phase: SA-Only Optimization ---
-  chrono::steady_clock::time_point sa_only_start = chrono::steady_clock::now();
-
-  int sa_only_iterations_ran = 0;
-  best_routes = sa_only_optimization(vrp, best_routes, sa_only_iters, &sa_only_iterations_ran);
-
-  chrono::steady_clock::time_point sa_only_end = chrono::steady_clock::now();
-
-  weight_t sa_only_cost = calculate_total_cost(vrp, best_routes);
-  int sa_only_vehicles = static_cast<int>(best_routes.size());
-  cout << "SA-Only Cost: " << sa_only_cost
-       << " Vehicles: " << sa_only_vehicles << endl;
   chrono::steady_clock::time_point total_end = chrono::steady_clock::now();
 
-  weight_t final_cost = calculate_total_cost(vrp, best_routes);
-  int final_vehicles = static_cast<int>(best_routes.size());
-  print_routes(best_routes);
+  weight_t final_cost = calculate_total_cost(vrp, routes);
+  int final_vehicles = static_cast<int>(routes.size());
+  print_routes(routes);
 
-  auto ns_to_sec = [](chrono::nanoseconds ns) {
-    return static_cast<double>(ns.count()) * 1.E-9;
+  auto elapsed_sec = [](chrono::steady_clock::time_point from,
+                        chrono::steady_clock::time_point to) {
+    return static_cast<double>(
+               chrono::duration_cast<chrono::nanoseconds>(to - from).count()) *
+           1.E-9;
   };
 
-  if (verify_route(vrp, best_routes)) {
-    cerr << "File: " << argv[1] << " ";
-    cerr << "Preprocessing_Time: "
-         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(pre_end - pre_start))
-         << " s ";
-    cerr << "Construction_Time: "
-         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(mid_end - mid_start))
-         << " s ";
-    cerr << "Construction_Cost: " << construction_cost << " ";
-    cerr << "Construction_Vehicles: " << construction_vehicles << " ";
-    // cerr << "Construction_MaxUtil: " << construction_max_util << " ";
-    // cerr << "Construction_AvgUtil: " << construction_avg_util << " ";
-    cerr << "InterRoute_Time: "
-         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(inter_end - inter_start))
-         << " s ";
-    cerr << "InterRoute_Cost: " << inter_cost << " ";
-    cerr << "InterRoute_Vehicles: " << inter_vehicles << " ";
-    // cerr << "InterRoute_MaxUtil: " << inter_max_util << " ";
-    // cerr << "InterRoute_AvgUtil: " << inter_avg_util << " ";
-    cerr << "IntraRoute_Time: "
-         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(intra_end - intra_start))
-         << " s ";
-    cerr << "IntraRoute_Cost: " << intra_cost << " ";
-    cerr << "IntraRoute_Vehicles: " << intra_vehicles << " ";
-    // cerr << "IntraRoute_MaxUtil: " << intra_max_util << " ";
-    // cerr << "IntraRoute_AvgUtil: " << intra_avg_util << " ";
-    cerr << "SA_RM_Time: "
-         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(sa_rm_end - sa_rm_start))
-         << " s ";
-    cerr << "SA_RM_Iterations: " << sa_rm_iterations_ran << " ";
-    cerr << "SA_RM_Cost: " << sa_rm_cost << " ";
-    cerr << "SA_RM_Vehicles: " << sa_rm_vehicles << " ";
-    cerr << "SA_Only_Time: "
-         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(sa_only_end - sa_only_start))
-         << " s ";
-    cerr << "SA_Only_Iterations: " << sa_only_iterations_ran << " ";
-    cerr << "SA_Only_Cost: " << sa_only_cost << " ";
-    cerr << "SA_Only_Vehicles: " << sa_only_vehicles << " ";
-    cerr << "Final_Cost: " << final_cost << " ";
-    cerr << "Final_Vehicles: " << final_vehicles << " ";
-    // cerr << "Final_MaxUtil: " << final_max_util << " ";
-    // cerr << "Final_AvgUtil: " << final_avg_util << " ";
-    cerr << "Total_Time: "
-         << ns_to_sec(chrono::duration_cast<chrono::nanoseconds>(total_end - total_start))
-         << " s ";
-    cerr << "route_length: " << max_length_of_route(best_routes) << " ";
-    cerr << "VALID" << endl;
-  }
+  bool valid = verify_route(vrp, routes);
+
+  cout << "Post-Opt iterations: " << post_opt_iterations_ran
+       << "  Max route length: " << max_length_of_route(routes)
+       << "  Valid: " << (valid ? "yes" : "no") << endl;
+
+  // One CSV row per run. The header is written by the test scripts:
+  //   File,Construction_Time,Construction_Cost,Construction_Vehicles,
+  //   Merge_Time,Merge_Cost,Merge_Vehicles,
+  //   PostOpt_Time,PostOpt_Cost,PostOpt_Vehicles,
+  //   Final_Time,Final_Cost,Final_Vehicles,Valid
+  // Final_Time is total wall clock, so the gap between it and the three phase
+  // times is preprocessing (file read + clustering). The row is emitted even
+  // when verification fails, with Valid=0, so a bad run is visible instead of
+  // silently missing.
+  cerr << fixed << setprecision(6);
+  cerr << argv[1] << ","
+       << elapsed_sec(construction_start, construction_end) << ","
+       << construction_cost << "," << construction_vehicles << ","
+       << elapsed_sec(merge_start, merge_end) << ","
+       << merge_cost << "," << merge_vehicles << ","
+       << elapsed_sec(post_opt_start, post_opt_end) << ","
+       << post_opt_cost << "," << post_opt_vehicles << ","
+       << elapsed_sec(total_start, total_end) << ","
+       << final_cost << "," << final_vehicles << ","
+       << (valid ? 1 : 0) << endl;
 
   return 0;
 }

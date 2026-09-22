@@ -524,10 +524,14 @@ vector<vector<RouteNode>> sa_post_optimization(
     const VRP &vrp,
     vector<vector<RouteNode>> routes,
     int max_iterations,
-    int *iterations_ran) {
+    int *iterations_ran,
+    bool enable_early_stop,
+    bool verbose) {
 
-  cout << "\n=== Starting Merged SA+RM (" << max_iterations
-       << " iterations, " << routes.size() << " routes) ===" << endl;
+  if (verbose) {
+    cout << "\n=== Starting Merged SA+RM (" << max_iterations
+         << " iterations, " << routes.size() << " routes) ===" << endl;
+  }
 
   double current_cost = calculate_total_cost(vrp, routes);
   double T0 = 0.02 * current_cost;
@@ -545,9 +549,11 @@ vector<vector<RouteNode>> sa_post_optimization(
   int actual_iterations = max_iterations;
   bool early_stopped = false;
 
-  cout << "  Initial cost: " << current_cost
-       << "  T0: " << T0
-       << "  Vehicles: " << routes.size() << endl;
+  if (verbose) {
+    cout << "  Initial cost: " << current_cost
+         << "  T0: " << T0
+         << "  Vehicles: " << routes.size() << endl;
+  }
 
   for (int iter = 0; iter < max_iterations; iter++) {
     auto saved = routes;
@@ -563,10 +569,16 @@ vector<vector<RouteNode>> sa_post_optimization(
              return vrp.get_route_load(a) < vrp.get_route_load(b);
            });
 
-      // Early exit: if the least-utilized route is at 100%, all are packed
-      if (vrp.get_route_load(routes[0]) >= vrp.getCapacity()) {
-        cout << "  All routes fully utilized, breaking at iteration "
-             << (iter + 1) << endl;
+      // Early exit: if the least-utilized route is at 100%, all are packed.
+      // Suppressed when the caller asked for the full iteration budget; the
+      // per-pair capacity check below then simply skips ejection and the SA
+      // operators still run.
+      if (enable_early_stop &&
+          vrp.get_route_load(routes[0]) >= vrp.getCapacity()) {
+        if (verbose) {
+          cout << "  All routes fully utilized, breaking at iteration "
+               << (iter + 1) << endl;
+        }
         actual_iterations = iter + 1;
         early_stopped = true;
         break;
@@ -720,9 +732,11 @@ vector<vector<RouteNode>> sa_post_optimization(
     actual_iterations = max_iterations;
   }
 
-  cout << "=== SA+RM " << (early_stopped ? "early-stopped" : "complete")
-       << ". Best cost: " << best_cost
-       << "  Vehicles: " << best_vehicles << " ===" << endl;
+  if (verbose) {
+    cout << "=== SA+RM " << (early_stopped ? "early-stopped" : "complete")
+         << ". Best cost: " << best_cost
+         << "  Vehicles: " << best_vehicles << " ===" << endl;
+  }
 
   if (iterations_ran) *iterations_ran = actual_iterations;
 
@@ -739,10 +753,13 @@ vector<vector<RouteNode>> sa_only_optimization(
     const VRP &vrp,
     vector<vector<RouteNode>> routes,
     int max_iterations,
-    int *iterations_ran) {
+    int *iterations_ran,
+    bool verbose) {
 
-  cout << "\n=== Starting SA-Only Optimization (" << max_iterations
-       << " iterations, " << routes.size() << " routes) ===" << endl;
+  if (verbose) {
+    cout << "\n=== Starting SA-Only Optimization (" << max_iterations
+         << " iterations, " << routes.size() << " routes) ===" << endl;
+  }
 
   double current_cost = calculate_total_cost(vrp, routes);
   double T0 = 0.02 * current_cost;
@@ -762,8 +779,10 @@ vector<vector<RouteNode>> sa_only_optimization(
   const double STAGNATION_EPSILON = 0.001;
   const double TEMP_FLOOR_FACTOR  = 1e-5;
 
-  cout << "  Initial cost: " << current_cost
-       << "  T0: " << T0 << endl;
+  if (verbose) {
+    cout << "  Initial cost: " << current_cost
+         << "  T0: " << T0 << endl;
+  }
 
   bool early_stopped = false;
   int actual_iterations = max_iterations;
@@ -795,8 +814,10 @@ vector<vector<RouteNode>> sa_only_optimization(
     temperature *= alpha;
 
     if (temperature < TEMP_FLOOR_FACTOR * current_cost) {
-      cout << "  SA-Only early stop (temperature floor) at iteration "
-           << (iter + 1) << ": T=" << temperature << endl;
+      if (verbose) {
+        cout << "  SA-Only early stop (temperature floor) at iteration "
+             << (iter + 1) << ": T=" << temperature << endl;
+      }
       actual_iterations = iter + 1;
       early_stopped = true;
       break;
@@ -806,9 +827,12 @@ vector<vector<RouteNode>> sa_only_optimization(
       double relative_improvement =
           (best_cost_at_window_start - best_cost) / best_cost_at_window_start;
       if (relative_improvement < STAGNATION_EPSILON) {
-        cout << "  SA-Only early stop (stagnation) at iteration " << (iter + 1)
-             << ": relative improvement " << relative_improvement
-             << " over last " << STAGNATION_WINDOW << " iterations" << endl;
+        if (verbose) {
+          cout << "  SA-Only early stop (stagnation) at iteration "
+               << (iter + 1) << ": relative improvement "
+               << relative_improvement << " over last " << STAGNATION_WINDOW
+               << " iterations" << endl;
+        }
         actual_iterations = iter + 1;
         early_stopped = true;
         break;
@@ -817,9 +841,253 @@ vector<vector<RouteNode>> sa_only_optimization(
     }
   }
 
-  cout << "=== SA-Only " << (early_stopped ? "early-stopped" : "complete")
-       << ". Best cost: " << best_cost
-       << "  Vehicles: " << best_routes.size() << " ===" << endl;
+  if (verbose) {
+    cout << "=== SA-Only " << (early_stopped ? "early-stopped" : "complete")
+         << ". Best cost: " << best_cost
+         << "  Vehicles: " << best_routes.size() << " ===" << endl;
+  }
+
+  if (iterations_ran) *iterations_ran = actual_iterations;
+
+  return best_routes;
+}
+
+// ---------------------------------------------------------------------------
+// 8. Post-merge optimization loop (no local-search operators)
+//    Each iteration: sort routes by utilization ascending, eject the 2
+//    lowest-utilization routes, cheapest feasible reinsertion (parallel),
+//    Clarke-Wright on whatever could not be placed, SA acceptance on the full
+//    iteration delta.
+//
+//    Deliberately carries no relocate / swap / 2-opt* operators. This loop runs
+//    on the whole instance after the merge phase, where those O(R^2 * L^2)
+//    scans are unaffordable; all of that work has already been done inside the
+//    clusters during construction.
+// ---------------------------------------------------------------------------
+vector<vector<RouteNode>> post_merge_optimization(
+    const VRP &vrp,
+    vector<vector<RouteNode>> routes,
+    int max_iterations,
+    int *iterations_ran,
+    bool verbose) {
+
+  if (verbose) {
+    cout << "\n=== Starting Post-Merge Optimization (" << max_iterations
+         << " iterations, " << routes.size() << " routes) ===" << endl;
+  }
+
+  double current_cost = calculate_total_cost(vrp, routes);
+  double T0 = 0.02 * current_cost;
+  // Cool to 0.1% of T0 over whatever iteration budget we were handed. The
+  // 0.9995 the other SA loops use is tuned for 10000 iterations; at 1000 it
+  // only reaches 0.6 * T0, which is a near-constant-temperature random walk.
+  double alpha = pow(1e-3, 1.0 / max(1, max_iterations));
+  double temperature = T0;
+
+  auto best_routes = routes;
+  double best_cost = current_cost;
+  int best_vehicles = static_cast<int>(routes.size());
+
+  random_device rd;
+  mt19937 rng(rd());
+
+  int eject_idx = 0;
+  int actual_iterations = max_iterations;
+  bool early_stopped = false;
+
+  if (verbose) {
+    cout << "  Initial cost: " << current_cost
+         << "  T0: " << T0
+         << "  Vehicles: " << routes.size() << endl;
+  }
+
+  for (int iter = 0; iter < max_iterations; iter++) {
+    auto saved = routes;
+    double old_cost = current_cost;
+
+    int num_routes = static_cast<int>(routes.size());
+    bool did_eject = false;
+
+    // Fewer than two routes leaves nothing to eject, and with no operators to
+    // fall back on every remaining iteration would be a no-op.
+    if (num_routes < 2) {
+      actual_iterations = iter + 1;
+      early_stopped = true;
+      break;
+    }
+
+    // Sort routes by load ascending (= utilization ascending, capacity is
+    // constant)
+    sort(routes.begin(), routes.end(),
+         [&vrp](const vector<RouteNode> &a, const vector<RouteNode> &b) {
+           return vrp.get_route_load(a) < vrp.get_route_load(b);
+         });
+
+    // 100% utilization guard. routes[0] and routes[1] are now the two
+    // least-utilized routes, so if routes[1] is already at capacity no pair
+    // in the solution can be ejected. Unlike SA+RM there are no operators
+    // left to run, so such an iteration would be a pure no-op -- a full
+    // solution copy and a load sort that change nothing. Stop instead of
+    // burning the remaining budget on it.
+    if (vrp.get_route_load(routes[1]) >= vrp.getCapacity()) {
+      if (verbose) {
+        cout << "  All routes fully utilized, breaking at iteration "
+             << (iter + 1) << endl;
+      }
+      actual_iterations = iter + 1;
+      early_stopped = true;
+      break;
+    }
+
+    // Bounds check
+    if (eject_idx + 1 >= num_routes) {
+      eject_idx = 0;
+    }
+
+    double load_i = vrp.get_route_load(routes[eject_idx]);
+    double load_i1 = vrp.get_route_load(routes[eject_idx + 1]);
+
+    if (load_i < vrp.getCapacity() && load_i1 < vrp.getCapacity()) {
+      did_eject = true;
+
+      vector<node_t> unplaced;
+
+      // Eject higher index first to preserve lower index
+      int idx_hi = eject_idx + 1;
+      int idx_lo = eject_idx;
+
+      for (int j = 1; j < static_cast<int>(routes[idx_hi].size()) - 1; j++) {
+        unplaced.push_back(routes[idx_hi][j].id);
+      }
+      routes.erase(routes.begin() + idx_hi);
+
+      for (int j = 1; j < static_cast<int>(routes[idx_lo].size()) - 1; j++) {
+        unplaced.push_back(routes[idx_lo][j].id);
+      }
+      routes.erase(routes.begin() + idx_lo);
+
+      // Sort unplaced by time-window tightness (tightest first): those have
+      // the fewest feasible slots, so they get first pick
+      sort(unplaced.begin(), unplaced.end(),
+           [&vrp](node_t a, node_t b) {
+             return (vrp.node[a].latestTime - vrp.node[a].earlyTime) <
+                    (vrp.node[b].latestTime - vrp.node[b].earlyTime);
+           });
+
+      // Cheapest feasible reinsertion (parallel)
+      vector<node_t> still_unplaced;
+      int nr = static_cast<int>(routes.size());
+
+      for (node_t cust : unplaced) {
+        int best_route = -1;
+        int best_pos = -1;
+        double best_insert_cost = 1e18;
+
+        #pragma omp parallel
+        {
+          int local_best_route = -1;
+          int local_best_pos = -1;
+          double local_best_cost = 1e18;
+
+          #pragma omp for schedule(dynamic) nowait
+          for (int r = 0; r < nr; r++) {
+            const auto &route = routes[r];
+            double load = vrp.get_route_load(route);
+            if (load + vrp.node[cust].demand > vrp.getCapacity()) continue;
+
+            for (int j = 1; j < static_cast<int>(route.size()); j++) {
+              node_t prev = route[j - 1];
+              node_t next = route[j];
+              double insert_cost = vrp.get_dist(prev, cust) +
+                                   vrp.get_dist(cust, next) -
+                                   vrp.get_dist(prev, next);
+
+              if (insert_cost < local_best_cost) {
+                vector<RouteNode> candidate = route;
+                candidate.insert(candidate.begin() + j, cust);
+                if (verify_single_route(vrp, candidate)) {
+                  local_best_cost = insert_cost;
+                  local_best_route = r;
+                  local_best_pos = j;
+                }
+              }
+            }
+          }
+
+          #pragma omp critical
+          {
+            if (local_best_cost < best_insert_cost) {
+              best_insert_cost = local_best_cost;
+              best_route = local_best_route;
+              best_pos = local_best_pos;
+            }
+          }
+        }
+
+        if (best_route >= 0) {
+          routes[best_route].insert(routes[best_route].begin() + best_pos, cust);
+          recalculate_pred_distances(vrp, routes[best_route]);
+          nr = static_cast<int>(routes.size());
+        } else {
+          still_unplaced.push_back(cust);
+        }
+      }
+
+      // Leftover consolidation via parallel C&W
+      if (!still_unplaced.empty()) {
+        vector<vector<int>> leftover_cluster = {still_unplaced};
+        auto cw_routes = clarke_wright_cvrptw_parallel(vrp, leftover_cluster);
+        for (auto &route : cw_routes) {
+          route.insert(route.begin(), RouteNode(DEPOT));
+          route.push_back(RouteNode(DEPOT));
+          recalculate_pred_distances(vrp, route);
+          routes.push_back(std::move(route));
+        }
+      }
+    }
+    // else: the walking index ran into the fully-packed tail (routes are
+    // sorted ascending, so a full route at eject_idx means every later route
+    // is full too). eject_idx resets below and the next iteration retries
+    // from the least-utilized pair, which the guard above proved ejectable.
+
+    // SA acceptance on the entire iteration
+    double new_cost = calculate_total_cost(vrp, routes);
+    double delta = new_cost - old_cost;
+
+    if (sa_accept(delta, temperature, rng)) {
+      current_cost = new_cost;
+    } else {
+      routes = std::move(saved);
+    }
+
+    // Track global best: lowest cost first, vehicles as tiebreaker
+    int current_vehicles = static_cast<int>(routes.size());
+    if (current_cost < best_cost ||
+        (current_cost == best_cost && current_vehicles < best_vehicles)) {
+      best_cost = current_cost;
+      best_vehicles = current_vehicles;
+      best_routes = routes;
+    }
+
+    temperature *= alpha;
+
+    // Advance eject index, or reset it when the walking pair was skipped
+    if (did_eject) {
+      eject_idx += 2;
+    } else {
+      eject_idx = 0;
+    }
+  }
+
+  if (!early_stopped) {
+    actual_iterations = max_iterations;
+  }
+
+  if (verbose) {
+    cout << "=== Post-Merge " << (early_stopped ? "early-stopped" : "complete")
+         << ". Best cost: " << best_cost
+         << "  Vehicles: " << best_vehicles << " ===" << endl;
+  }
 
   if (iterations_ran) *iterations_ran = actual_iterations;
 
