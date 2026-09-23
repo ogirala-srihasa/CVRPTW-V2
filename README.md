@@ -161,6 +161,60 @@ Routes and per-phase progress are printed to `stdout`. Exactly one CSV row is wr
 
 `Final_Cost` and `Final_Vehicles` duplicate the post-opt values by construction; the gap between `Final_Time` and the three phase times is preprocessing. The row is emitted even when verification fails, so a bad run shows up as `Valid=0` rather than vanishing from the results file.
 
+## cuOpt Baseline Comparison
+
+`solve_cuopt.py` runs NVIDIA's cuOpt GPU routing solver over the same instances, as a
+reference point for our own results. It parses the same Solomon files directly, so no
+conversion step is needed.
+
+The comparison is **equal-budget**: each instance gives cuOpt exactly the wall-clock time
+our solver spent on that same instance, read from the `Final_Time` column of our results
+CSV. If our pipeline took 45.2s on `C1_10_1.txt`, cuOpt gets 45.2s on `C1_10_1.txt`. A
+fixed budget would have measured something else entirely — how each solver happens to
+behave at an arbitrary time limit, rather than which one does more with the same time.
+
+This means **our solver must be run first**; `run_cuopt.sh` exits with an error if the
+results CSV is missing. Instances with no row in it are skipped and listed at the end,
+rather than being given a substituted budget that would make the row a non-comparison.
+When an instance appears more than once (the batch scripts append), the last row wins.
+
+```bash
+sbatch submit_job.sh          # produces outputs/result.csv
+sbatch submit_cuopt_job.sh    # reads it, runs cuOpt at matched budgets
+```
+
+Or directly:
+
+```bash
+bash run_cuopt.sh                                             # testcase/ vs outputs/result.csv
+bash run_cuopt.sh I_testcases outputs/result_i_instances.csv  # another instance set
+```
+
+Results append to `outputs_cuopt/cuopt_results.csv`, one row per instance:
+
+| Column | Description |
+|---|---|
+| `instance` | Instance file basename, the key joining the two CSVs |
+| `n_customers`, `n_vehicles_available`, `capacity` | Parsed from the instance file |
+| `timeout_s` | Time limit given to cuOpt — our solver's `Final_Time` |
+| `status`, `status_name` | cuOpt status (0 SUCCESS, 1 FAIL, 2 TIMEOUT, 3 EMPTY) |
+| `total_cost`, `vehicles_used` | cuOpt's solution, blank if none was produced |
+| `solve_time_s` | Measured cuOpt wall time, to confirm it respected the limit |
+| `our_cost`, `our_vehicles`, `our_valid` | Our figures from the same row, so the file is self-contained |
+
+`submit_cuopt_job.sh` requests the `gpu` partition with one GPU and an 8-hour limit, and
+expects a venv at `~/cuopt_env` with the `cuopt-cu12` package — see the one-time setup
+comments at the top of that script. The results CSV is validated *before* cuOpt is
+imported, so a missing or stale-format file fails in seconds rather than after GPU init.
+
+Two things to watch:
+
+- Delete an existing `outputs_cuopt/cuopt_results.csv` before the first run after a
+  column change. The script appends and only writes a header when the file is absent.
+- `submit_cuopt_job.sh` does `cd "$SLURM_SUBMIT_DIR"`, so it resolves `outputs/result.csv`
+  relative to wherever you submitted from. Submit both jobs from the same directory, or
+  pass the path to `run_cuopt.sh` explicitly.
+
 ## Project Structure
 
 ```
@@ -174,6 +228,10 @@ test_huge.sh              Batch runner for XMLTW10000_*.txt files
 test_i_instances.sh       Batch runner for I_testcases/*.txt
 run.sh                    Quick sequential batch runner
 generatefromvrp.py        Converts CVRPLIB .vrp files to Solomon VRPTW format
+
+solve_cuopt.py            cuOpt GPU baseline; time limits read from our results CSV
+run_cuopt.sh              Batch runner for the cuOpt baseline
+submit_cuopt_job.sh       SLURM job script (1 GPU, 8h, gpu partition)
 
 lib/
   vrp.h / vrp.cpp                     VRP data structures, instance parser, distance
@@ -193,6 +251,7 @@ XMLTW10000_*.txt          Gehring & Homberger 10,000-customer instances (6 files
 testcase/                 Gehring & Homberger benchmark instances (1000 customers)
 I_testcases/              Italian province CVRPTW instances (20K–1M customers, generated from .vrp)
 outputs/                  Generated results from batch runs
+outputs_cuopt/            Generated results from cuOpt baseline runs
 ```
 
 Utility scripts (not part of the solver):
