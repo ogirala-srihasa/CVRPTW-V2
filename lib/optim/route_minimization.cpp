@@ -242,3 +242,169 @@ int minimize_routes(const VRP &vrp,
 
   return eliminated;
 }
+
+// ---------------------------------------------------------------------------
+// route_min_v2 - greedy vehicle-count minimization.
+//
+// Repeatedly ejects the least-loaded route and redistributes its customers
+// into the remaining routes at their cheapest feasible positions. An ejection
+// is committed only if EVERY customer finds a feasible slot; the first time
+// one does not, the ejection is rolled back and the loop stops.
+//
+// Two deliberate differences from minimize_routes above:
+//   - No Clarke-Wright fallback for leftovers. Building a new route to hold
+//     them would put the vehicle count straight back where it started, which
+//     is the opposite of the point here.
+//   - No best-solution tracking. Rollback already guarantees the routes never
+//     end up worse than they started, so there is nothing to track.
+//
+// Termination: every committed iteration removes exactly one route, so the
+// loop runs at most routes.size() - 1 times before the size guard stops it.
+//
+// Stopping on the first failure is a heuristic, not a proof that no route can
+// be dissolved. A fuller route further down the ordering might still have been
+// removable - its customers could have looser time windows than the ones that
+// just failed. Trying the next route instead of breaking would eliminate more
+// vehicles at proportionally more search cost.
+//
+// This trades distance for vehicles. Absorbing another route's customers
+// almost always lengthens the routes that take them, and no cost check gates
+// the move - the only question asked is whether the vehicle can be removed
+// while keeping every route feasible.
+//
+// Returns the number of routes eliminated.
+// ---------------------------------------------------------------------------
+int route_min_v2(const VRP &vrp,
+                 vector<vector<RouteNode>> &routes,
+                 bool verbose) {
+
+  int initial_count = static_cast<int>(routes.size());
+
+  if (verbose) {
+    cout << "\n=== Starting Route Minimization v2 (" << initial_count
+         << " routes) ===" << endl;
+  }
+
+  while (true) {
+    // With one route left there is nothing to absorb its customers.
+    if (routes.size() < 2) {
+      break;
+    }
+
+    // Sort by load ascending and attack the emptiest route: fewest customers
+    // to rehome, best chance of fitting them elsewhere. Re-sorted every pass
+    // because a successful redistribution makes every surviving route fuller,
+    // so the previous ordering no longer has the emptiest route first.
+    sort(routes.begin(), routes.end(),
+         [&vrp](const vector<RouteNode> &a, const vector<RouteNode> &b) {
+           return vrp.get_route_load(a) < vrp.get_route_load(b);
+         });
+
+    // Snapshot for rollback - the ejection is committed only if every
+    // customer is successfully rehomed.
+    auto saved = routes;
+
+    // Routes are [DEPOT, c1, ..., cn, DEPOT], so the customers are the
+    // interior nodes. An already-empty route yields nothing here and is
+    // simply removed, which is a legitimate elimination.
+    vector<node_t> unplaced;
+    for (int j = 1; j < static_cast<int>(routes[0].size()) - 1; j++) {
+      unplaced.push_back(routes[0][j].id);
+    }
+    routes.erase(routes.begin());
+
+    // Sort unplaced by time-window tightness: tightest first, since those
+    // have the fewest feasible slots and should get first pick.
+    sort(unplaced.begin(), unplaced.end(),
+         [&vrp](node_t a, node_t b) {
+           tw_t slack_a = vrp.node[a].latestTime - vrp.node[a].earlyTime;
+           tw_t slack_b = vrp.node[b].latestTime - vrp.node[b].earlyTime;
+           return slack_a < slack_b;
+         });
+
+    bool all_placed = true;
+
+    // routes.size() does not change during reinsertion - customers are only
+    // inserted into existing routes, never appended as new ones.
+    int num_routes = static_cast<int>(routes.size());
+
+    for (node_t cust : unplaced) {
+      int best_route = -1;
+      int best_pos = -1;
+      double best_insert_cost = 1e18;
+
+      // routes and vrp are read-only inside the region. Each thread keeps its
+      // own best candidate (declared inside, so private) and they are reduced
+      // through the critical section. The mutation happens after the region.
+      #pragma omp parallel
+      {
+        int local_best_route = -1;
+        int local_best_pos = -1;
+        double local_best_cost = 1e18;
+
+        #pragma omp for schedule(dynamic) nowait
+        for (int r = 0; r < num_routes; r++) {
+          const auto &route = routes[r];
+
+          double load = vrp.get_route_load(route);
+          if (load + vrp.node[cust].demand > vrp.getCapacity()) continue;
+
+          for (int j = 1; j < static_cast<int>(route.size()); j++) {
+            node_t prev = route[j - 1];
+            node_t next = route[j];
+
+            double insert_cost = vrp.get_dist(prev, cust) +
+                                 vrp.get_dist(cust, next) -
+                                 vrp.get_dist(prev, next);
+
+            if (insert_cost < local_best_cost) {
+              vector<RouteNode> candidate = route;
+              candidate.insert(candidate.begin() + j, cust);
+
+              if (verify_single_route(vrp, candidate)) {
+                local_best_cost = insert_cost;
+                local_best_route = r;
+                local_best_pos = j;
+              }
+            }
+          }
+        }
+
+        #pragma omp critical
+        {
+          if (local_best_cost < best_insert_cost) {
+            best_insert_cost = local_best_cost;
+            best_route = local_best_route;
+            best_pos = local_best_pos;
+          }
+        }
+      }
+
+      if (best_route >= 0) {
+        routes[best_route].insert(routes[best_route].begin() + best_pos, cust);
+        recalculate_pred_distances(vrp, routes[best_route]);
+      } else {
+        // One customer with nowhere feasible to go is enough to sink this
+        // ejection. No point trying the rest.
+        all_placed = false;
+        break;
+      }
+    }
+
+    if (!all_placed) {
+      routes = std::move(saved);
+      break;
+    }
+  }
+
+  int final_count = static_cast<int>(routes.size());
+  int eliminated = initial_count - final_count;
+
+  if (verbose) {
+    cout << "=== Route Minimization v2 complete. Eliminated " << eliminated
+         << " routes (" << initial_count << " -> " << final_count << ") ==="
+         << endl;
+  }
+
+  return eliminated;
+}

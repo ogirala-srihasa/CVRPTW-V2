@@ -13,7 +13,7 @@ The solver runs three phases. The central idea is that **all expensive local sea
 1. **Clarke-Wright savings** (`lib/clark/clarke_wright.cpp`) — one route per customer, then repeated best-merge over route pairs. Four orientations per pair (forward/forward, reversed/forward, forward/reversed, and the swapped order), scored as `0.7 * dist_saving - 0.3 * waiting`, with every candidate re-verified against capacity and time windows before acceptance.
 2. **Inter-route optimization** (`lib/optim/inter_route_optimization.cpp`) — relocate, swap, and 2-opt*, each best-improvement with a full restart after every accepted move. Also erases routes that decay to `[DEPOT, DEPOT]`.
 3. **Intra-route optimization** (`lib/optim/intra_route_optimization.cpp`) — nearest-neighbor TSP approximation followed by 2-opt, keeping whichever of the two orderings is cheaper per route. DEPOT bookends are stripped before this phase (`postProcessIt` reorders all route elements) and re-added afterward.
-4. **Merged SA + route minimization** (`sa_post_optimization`) — 10,000 iterations with early stopping **disabled**, so the full budget is always spent. Each iteration sorts routes by utilization ascending, ejects the two least-utilized routes, reinserts their customers at the cheapest feasible position, consolidates leftovers with Clarke-Wright, then applies one best relocate / swap / 2-opt* / intra-2-opt move. SA acceptance on the whole iteration's delta.
+4. **Vehicle-count minimization** (`route_min_v2`, `lib/optim/route_minimization.cpp`) — sorts routes by load ascending, then repeatedly ejects the emptiest route and reinserts its customers at their cheapest feasible positions. An ejection is committed only if *every* customer finds a feasible slot; the first leftover rolls that ejection back and ends the loop. Self-terminating, so it takes no iteration budget.
 5. **SA-only** (`sa_only_optimization`) — 10,000 iterations of ruin-and-recreate (14 random removals + cheapest feasible reinsertion) plus the same four operators, with early stopping via stagnation (<0.1% improvement over a 300-iteration window) or temperature floor (`T < 1e-5 * cost`).
 
 **2. Merge phase** (`merge_phase`, `lib/optim/pipeline.cpp`). Clustering necessarily cuts through natural customer groups, so this phase merges routes back across those cuts using `clarke_wright_merge_routes` — the same savings machinery as construction, but seeded from the **existing routes** rather than from singletons, so the ordering computed inside each route survives and only whole-route concatenations are considered. Scoping depends on size (see Design Notes).
@@ -66,9 +66,32 @@ It runs on the whole instance, where relocate / swap / 2-opt* are exactly the O(
 
 That absence is also why the loop's **100% utilization guard is keyed on `routes[1]`, not `routes[0]`**. After the ascending load sort, `routes[0]` and `routes[1]` are the two least-utilized routes, so if `routes[1]` is already at capacity then no pair in the solution can be ejected. Keying the check on `routes[0]` instead would let the walking ejection index reset to 0 and spin — and with no operators to fall back on, each spin is a full solution copy plus a load sort that change nothing. `sa_post_optimization` can afford the weaker check because its operators still run on a skipped iteration.
 
+### Why route_min_v2 replaced the SA+RM loop
+
+The construction phase originally ran `sa_post_optimization` here: 10,000 iterations of
+ejection *plus* relocate / swap / 2-opt* / intra-2-opt *plus* SA acceptance, tracking its
+best solution **by cost**. That was the single most expensive thing in the pipeline.
+
+`route_min_v2` asks one question instead — can this vehicle be removed while keeping every
+route feasible — and answers it in at most R passes rather than 10,000 iterations. It has
+no operators, no SA acceptance, and no cost check at all.
+
+The trade is explicit: **fewer vehicles, higher distance** out of this phase, since
+absorbing another route's customers lengthens whatever takes them and nothing gates that.
+`sa_only_optimization` still runs afterward and claws distance back, but the local search
+that used to be interleaved with each ejection is gone from this stage.
+
+Stopping at the first failed ejection is a heuristic, not a proof that no route is
+removable — a fuller route further down the ordering could have looser time windows and
+still be dissolvable. Continuing past the failure would eliminate more vehicles at
+proportionally more search cost.
+
+`sa_post_optimization` remains in `sa_optimization.cpp`, uncalled, so the previous
+behavior is one line away in `construct_cluster_routes`.
+
 ### Cooling schedules
 
-`sa_post_optimization` and `sa_only_optimization` use a fixed `alpha = 0.9995`, tuned for their 10,000-iteration budgets. `post_merge_optimization` instead derives `alpha = pow(1e-3, 1.0 / max_iterations)` so temperature reaches 0.1% of T0 for any budget; at 1,000 iterations the fixed 0.9995 only reaches 0.6·T0, which is a near-constant-temperature random walk. All three use `T0 = 2%` of the phase's initial cost.
+`sa_only_optimization` uses a fixed `alpha = 0.9995`, tuned for its 10,000-iteration budget (as does `sa_post_optimization`, though the pipeline no longer calls it). `post_merge_optimization` instead derives `alpha = pow(1e-3, 1.0 / max_iterations)` so temperature reaches 0.1% of T0 for any budget; at 1,000 iterations the fixed 0.9995 only reaches 0.6·T0, which is a near-constant-temperature random walk. All three use `T0 = 2%` of the phase's initial cost.
 
 ### Known limitations
 
@@ -96,10 +119,11 @@ make clean
 
 ```bash
 ./solve_cvrptw <instance_file> <cluster_size> [sa_rm_iterations] [sa_only_iterations] [post_opt_iterations]
+#                                                  ^ accepted but unused
 ```
 
 - `cluster_size` — customers per cluster (1000 is the tuned default).
-- `sa_rm_iterations` — per-cluster SA+RM iterations (default 10,000). Early stopping is disabled in this phase, so the full budget is always spent.
+- `sa_rm_iterations` — **unused.** The construction phase now minimizes vehicles with `route_min_v2`, which runs until an ejection fails rather than for a fixed count. The argument is still parsed so existing scripts and queued jobs keep their positions.
 - `sa_only_iterations` — per-cluster SA-only iterations (default 10,000). Stops early on stagnation or temperature floor.
 - `post_opt_iterations` — global post-merge iterations (default 1,000). Stops early once every route is at full capacity.
 
@@ -126,7 +150,7 @@ bash test.sh [--parallel] [--cluster-size N] [--sa-rm-iterations N] \
 | `test_i_instances.sh` | `I_testcases/*.txt` (20K–1M customers) | `outputs/result_i_instances.csv` |
 | `run.sh` | `testcase/*`, sequential build, no flags for parallel | `outputs/result.csv` |
 
-Per-instance `stdout` goes to `outputs/<instance>.out`. Defaults are cluster size 1000, 10,000 SA+RM, 10,000 SA-only, 1,000 post-opt.
+Per-instance `stdout` goes to `outputs/<instance>.out`. Defaults are cluster size 1000, 10,000 SA-only, 1,000 post-opt (the SA+RM argument is accepted and ignored).
 
 ### SLURM (HPC cluster)
 
@@ -242,10 +266,10 @@ lib/
     clarke_wright.h / clarke_wright.cpp   Savings heuristic: from singletons, and from existing routes
   optim/
     pipeline.h / pipeline.cpp                     Construction phase and merge phase orchestration
-    sa_optimization.h / sa_optimization.cpp       SA+RM, SA-only, and post-merge loops
+    sa_optimization.h / sa_optimization.cpp       SA-only and post-merge loops (SA+RM retained, uncalled)
     intra_route_optimization.h / .cpp             Within-route: nearest-neighbor, 2-opt
     inter_route_optimization.h / .cpp             Between-route: relocate, swap, 2-opt*
-    route_minimization.h / .cpp                   Standalone vehicle reduction (unused, logic merged into SA)
+    route_minimization.h / .cpp                   route_min_v2 (used by the construction phase); minimize_routes (unused)
 
 XMLTW10000_*.txt          Gehring & Homberger 10,000-customer instances (6 files)
 testcase/                 Gehring & Homberger benchmark instances (1000 customers)

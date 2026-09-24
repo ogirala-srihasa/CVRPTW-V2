@@ -12,6 +12,7 @@
 #include "../route_utils.h"
 #include "inter_route_optimization.h"
 #include "intra_route_optimization.h"
+#include "route_minimization.h"
 #include "sa_optimization.h"
 
 using namespace std;
@@ -29,7 +30,6 @@ using namespace std;
 static vector<vector<RouteNode>> construct_cluster_routes(
     const VRP &vrp,
     const vector<node_t> &cluster,
-    int sa_rm_iterations,
     int sa_only_iterations,
     bool use_inner_parallel) {
 
@@ -81,9 +81,12 @@ static vector<vector<RouteNode>> construct_cluster_routes(
     recalculate_pred_distances(vrp, route);
   }
 
-  // --- Merged SA + route minimization, full iteration budget (no early stop) ---
-  routes = sa_post_optimization(vrp, routes, sa_rm_iterations, nullptr, false,
-                                false);
+  // --- Vehicle-count minimization ---
+  // Greedy ejection of the emptiest route until one cannot be rehomed, in
+  // place of the previous SA+RM loop. route_min_v2 self-terminates (each
+  // committed pass removes exactly one route), so there is no iteration
+  // budget to hand it.
+  route_min_v2(vrp, routes, false);
 
   // --- Pure SA, early stopping enabled ---
   routes = sa_only_optimization(vrp, routes, sa_only_iterations, nullptr, false);
@@ -94,7 +97,6 @@ static vector<vector<RouteNode>> construct_cluster_routes(
 vector<vector<vector<RouteNode>>> construction_phase(
     const VRP &vrp,
     const vector<vector<node_t>> &clusters,
-    int sa_rm_iterations,
     int sa_only_iterations) {
 
   int num_clusters = static_cast<int>(clusters.size());
@@ -125,12 +127,12 @@ vector<vector<vector<RouteNode>>> construction_phase(
     #pragma omp parallel for schedule(dynamic)
     for (int c = 0; c < num_clusters; c++) {
       grouped_routes[c] = construct_cluster_routes(
-          vrp, clusters[c], sa_rm_iterations, sa_only_iterations, false);
+          vrp, clusters[c], sa_only_iterations, false);
     }
   } else {
     for (int c = 0; c < num_clusters; c++) {
       grouped_routes[c] = construct_cluster_routes(
-          vrp, clusters[c], sa_rm_iterations, sa_only_iterations, true);
+          vrp, clusters[c], sa_only_iterations, true);
     }
   }
 

@@ -27,8 +27,8 @@ int main(int argc, char *argv[]) {
   if (argc < 3) {
     cout << "seqCVRPTW version 4" << '\n';
     cout << "Usage: " << argv[0]
-         << " toy.vrp cluster_size [sa_rm_iterations] [sa_only_iterations]"
-         << " [post_opt_iterations]" << '\n';
+         << " toy.vrp cluster_size [sa_rm_iterations (unused)]"
+         << " [sa_only_iterations] [post_opt_iterations]" << '\n';
     exit(1);
   }
 
@@ -38,6 +38,12 @@ int main(int argc, char *argv[]) {
   int sa_rm_iterations = (argc >= 4) ? stoi(argv[3]) : 10000;
   int sa_only_iterations = (argc >= 5) ? stoi(argv[4]) : 10000;
   int post_opt_iterations = (argc >= 6) ? stoi(argv[5]) : 1000;
+
+  // The construction phase now minimizes vehicles with route_min_v2, which
+  // runs until an ejection fails rather than for a fixed number of iterations.
+  // argv[3] is kept in place so existing scripts and queued jobs keep their
+  // argument positions, but nothing reads it.
+  (void)sa_rm_iterations;
 
 #ifdef _OPENMP
   // The construction phase nests the SA loops' own parallel regions inside a
@@ -62,8 +68,7 @@ int main(int argc, char *argv[]) {
   // --- Phase 1: per-cluster construction and optimization ---
   chrono::steady_clock::time_point construction_start =
       chrono::steady_clock::now();
-  auto grouped_routes =
-      construction_phase(vrp, clusters, sa_rm_iterations, sa_only_iterations);
+  auto grouped_routes = construction_phase(vrp, clusters, sa_only_iterations);
   chrono::steady_clock::time_point construction_end =
       chrono::steady_clock::now();
 

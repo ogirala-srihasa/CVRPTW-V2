@@ -6,13 +6,12 @@
 #include "../vrp.h"
 
 // Runs the full per-cluster optimization pipeline (Clarke-Wright -> inter-route
-// -> intra-route -> SA+RM -> SA-only) on every cluster. Routes are returned
-// grouped by cluster, which the merge phase needs in order to pair up
+// -> intra-route -> route_min_v2 -> SA-only) on every cluster. Routes are
+// returned grouped by cluster, which the merge phase needs in order to pair up
 // neighbouring angular slices.
 std::vector<std::vector<std::vector<RouteNode>>> construction_phase(
     const VRP &vrp,
     const std::vector<std::vector<node_t>> &clusters,
-    int sa_rm_iterations,
     int sa_only_iterations);
 
 // Merges routes that the clustering split apart. Runs a single global
